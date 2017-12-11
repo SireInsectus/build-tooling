@@ -1,10 +1,52 @@
 # Change Log for Master Parse Tool
 
-Version 1.7.2
+Version 1.11.1:
+
+* Master parser now emits `%scala`, `%python`, `%r`, `%sql`, `%markdown` 
+  and `%markdown-sandbox` on their own lines (i.e., any cell content starts
+  on the second line of the cell). Previously, it only did so for `%scala`,
+  `%python` and `%r`. With other "magic" cells (`%run`, `%fs`, `%sh`), the
+  cell content starts on the same line as the magic token.
+* Changed insertion of Creative Commons license (`-cc` option) to ensure that
+  the license cell is `%md-markdown`, not `%md`.
+* Fixed incorrect formatting when both the Databricks training heading and the
+  Creative Commons license are selected.
+
+Version 1.11.0:
+
+* Fixed footer logic to handle Scala (i.e., to use the proper language-specific)
+  comment syntax.
+* Added `--notebook-footer` and `--footer` arguments to control the generated
+  footer (both the content and whether the footer is added). Consistent with
+  `--notebook-heading` and `--heading`, the footer is off by default.
+* Added `--copyright YEAR` option, to specify the copyright year that is
+  substituted into the default footer.
+
+Version 1.10.0:
+
+* Added automatic copyright footer to generated notebooks.
+
+Version 1.9.0:
+
+* Video tag is now `-- VIDEO id [title]`, where `id` is a video ID. Videos
+  are now assumed to reside on Wistia.com.
+* `:HINT:` now expands to an image and text, not just text.
+* `:NOTE:` has been removed. (Use `:SIDENOTE:`, instead.)
+* `:KEYPOINT:`, `:INSIGHT:`, `:WARNING` have been removed.
+* Fixed code that renders inline tokens (`:HINT:`, etc.) to render them in
+  `%md-sandbox` if necessary.
+
+Version 1.8.0
+
+* Added support for inline callouts. The tokens `:HINT:`, `:CAUTION:`, 
+  `:WARNING:`,`:BESTPRACTICE:`, `:KEYPOINT:`, `:SIDENOTE:`, and `:INSIGHT:`
+  are replaced, inline, with appropriate expansions.
+
+Version 1.7.2:
 
 * Fixes to handle both `%r` and `%md-sandbox`.
 
-Version 1.7.1
+Version 1.7.1:
 
 * Updates to fix handling of `%run`. **Breaks `%r`!**
 

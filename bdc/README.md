@@ -9,7 +9,8 @@ For usage instructions, see [Usage](#usage).
 
 ## Preparing the environment
 
-_bdc_ was written for Python 3, but it will run with Python 2.
+_bdc_ only works on Python 2, because the `--upload` and `--download` features
+use the Databricks CLI, which is Python 2-only. 
 
 ### Create a Python virtual environment
 
@@ -69,22 +70,19 @@ Once you've activated the appropriate Python virtual environment, just run
 the following commands in this directory:
 
 ```
-pip install -r requirements.txt
 python setup.py install
 ```
 
 ### Install the master parse tool
 
-_bdc_ depends on the [master parse tool](../master_parse), which is written
-in Python. Install that tool by running
+_bdc_ depends on the
+[master parse tool](https://github.com/databricks-edu/build-tooling/tree/master/master_parse).
+See the
+[master_parse README](https://github.com/databricks-edu/build-tooling/blob/master/master_parse/README.md)
+for instructions on how to install that tool. 
 
-```
-python setup.py install
-```
-
-in the `master_parse` source directory.
-
-You need to tell _bdc_ which notebooks to pass through the master parse tool on a per notebook basis in the build.yaml file for a course.
+You need to tell _bdc_ which notebooks to pass through the master parse tool 
+on a per notebook basis in the `build.yaml` file for a course.
 
 ### Install gendbc
 
@@ -92,25 +90,29 @@ _bdc_ also depends on the [gendbc](../gendbc/README.md) tool, which is
 written in Scala. Follow the instructions in the _gendbc_ `README.md` file
 to install _gendbc_ in the build environment you'll be using.
 
+**NOTE**: `bdc` expects to find the `gendbc` binary by searching your PATH.
+`gendbc` is installed in `$HOME/local/bin` by default, so make sure that's in
+your PATH.
+
+### Install the Databricks CLI
+
+If you're using `bdc --upload` or `bdc --download` (see [Usage](#usage)), you
+also need the [Databricks Command Line Interface](https://docs.databricks.com/user-guide/databricks-cli.html).
+This tool _only_ supports Python 2; you can install it via:
+
+```
+pip install databricks-cli
+``` 
+
+See <https://docs.databricks.com/user-guide/databricks-cli.html> for complete
+installation and configuration details.
+
 ## Configuration
 
-_bdc_ uses two configuration files:
-
-* a master configuration, which configures _bdc_ itself.
-* a per-course configuration
-
-### The master configuration
-
-The _bdc_ configuration file tells _bdc_ about the build environment.
-It's a Python ConfigParser configuration. See
-<https://docs.python.org/3/library/configparser.html>.
-
-See [bdc.cfg](bdc.cfg) in this directory for a fully-documented example.
-
-### The per-class build file
-
-The per-class build file is a YAML file describing the files that comprise a
-particular class. Each class that is to be built will have its own build file.
+_bdc_ uses a per-course build file that describes the course being built. This
+file, conventionally called `build.yaml`, is a YAML file describing the files
+that comprise a particular class. Each class that is to be built will have its 
+own build file.
 
 See [build.yaml](build.yaml) in this directory for a fully-documented example.
 
@@ -143,19 +145,18 @@ directory.
 
 ### Build a course
 
-`bdc [-o | --overwrite] [(-v | --verbose) [-c master-cfg] [build-yaml]`
+`bdc [-o | --overwrite] [-v | --verbose] [-d DEST | --dest DEST] [build-yaml]`
 
-This version of the command builds a course, writing the results to a directory
-underneath the `build_directory` path specified in the master config.
+This version of the command builds a course, writing the results to the
+specified destination directory, `DEST`. If the destination directory
+doesn't exist, it defaults to `$HOME/tmp/curriculum/<course-id>` (e.g.,
+`$HOME/tmp/curriculum/Spark-100-105-1.8.11`).
 
-If the output directory already exists, the build will fail _unless_ you
+If the destination directory already exists, the build will fail _unless_ you
 also specify `-o` (or `--overwrite`).
 
 If you specify `-v` (`--verbose`), the build process will emit various verbose
 messages as it builds the course.
-
-`master-cfg` is the path to the master configuration. It defaults to
-`~/.bdc.cfg`.
 
 `build-yaml` is the path to the course's `build.yaml` file, and it defaults to 
 `build.yaml` in the current directory.
@@ -174,6 +175,9 @@ editing, you can use `bdc` to download the notebooks again. (See below.)
 `shard-path` is the path to the folder on the Databricks shard. For instance:
 `/Users/foo@example.com/Spark-ML-301`. The folder **must not exist** in the
 shard. If it already exists, the upload will abort.
+
+`shard-path` can be relative to your home directory. See
+[Relative Shard Paths](#relative-shard-paths), below.
 
 `build-yaml` is the path to the course's `build.yaml` file, and it defaults to 
 `build.yaml` in the current directory.
@@ -202,6 +206,10 @@ copies the downloaded file over top of the original source.
 `/Users/foo@example.com/Spark-ML-301`. The folder **must exist** in the
 shard. If it doesn't exist, the upload will abort.
 
+`shard-path` can be relative to your home directory. See
+[Relative Shard Paths](#relative-shard-paths), below.
+
+
 `build-yaml` is the path to the course's `build.yaml` file, and it defaults to 
 `build.yaml` in the current directory.
 
@@ -226,3 +234,31 @@ package. The shard to which the notebooks are uploaded is part of the
 `databricks-cli` configuration.
 
 See <https://docs.databricks.com/user-guide/databricks-cli.html> for details.
+
+### Relative Shard Paths
+
+`--upload` and `--download` can support relative shard paths, allowing you
+to specify `foo`, instead of `/Users/user@example.com/foo`, for instance.
+To enable relative shard paths, you must do one of the following:
+
+**Set `DB_SHARD_HOME`**
+
+You can set the `DB_SHARD_HOME` environment variable (e.g., in your
+`~/.bashrc`) to specify your home path on the shard. For example:
+
+```shell
+export DB_SHARD_HOME=/Users/user@example.com
+```
+
+**Add a `home` setting to `~/.databrickscfg`**
+
+You can also add a `home` variable to `~/.databrickscfg`, in the `DEFAULT`
+section. The Databricks CLI command will ignore it, but `bdc` will honor it.
+For example:
+
+```
+[DEFAULT]
+host = https://trainers.cloud.databricks.com
+token = lsakdjfaksjhasdfkjhaslku89iuyhasdkfhjasd
+home = /Users/user@example.net
+```
