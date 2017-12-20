@@ -1,5 +1,39 @@
 # Change Log for BDC
 
+Version 1.14.0:
+
+* Variable substitution now supports a simple inline variable edit capability.
+  General format: `${var/regex/replacement/flags}` where `regex` is a
+  regular expression, `replacement` is a replacement string, and `flags`
+  can be `i` (case-insensitive), `g` (substitute all occurrences, not just
+  the first), or `ig` (both). The delimiter can be either "/" or "|", and
+  the delimiter can be escaped with a backslash, if necessary. Examples:
+  Regular expression groups can be substituted using `$1`, `$2`, etc.
+  
+```
+# Replace all occurrences of "letters/numbers" with "FOOBAR"
+${foo|[a-z]+/\d+|FOOBAR|g}
+```
+
+Version 1.13.0:
+
+* Variable substitution now supports a C-like ternary `if` syntax. For instance:
+
+```
+${variable == "foo" ? "Got foo" : "No foo"}
+```
+
+* Added doctests to `bdc/bdcutil.py`. Just run the module to run the tests.
+
+Version 1.12.2:
+
+* Revised default Version-x.x.x file, removing an excess new line.
+
+Version 1.12.1:
+
+* Fixed upload and download capabilities to handle new (nonexistent) notebooks
+  better.
+
 Version 1.12.0:
 
 * Added `top_dbc_folder_name` to `build.yaml`, allowing specification of the

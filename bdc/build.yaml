@@ -1,5 +1,87 @@
 # Template for bdc build YAML file.
 
+# -----------------------------------------------------------------------------
+# ON VARIABLE SUBSTITUTION
+#
+# Many sections of a build.yaml support variable substitution. The syntax is
+# Unix shell-like:
+#
+# $var   - substitute the value of a variable called "var"
+# ${var} - substitute the value of a variable called "var"
+#
+# The second form is useful when you need to ensure that a variable's name
+# doesn't get mashed together with a subsequent non-white space string, e.g.:
+#
+# ${var}foo     Substitutes the value of "var" preceding the string "foo"
+# $varfoo       Attempts to substitute the value of "varfoo"
+#
+# VARIABLE NAMES
+# ---------------
+#
+# Legal variable names consist of alphanumeric and underscore characters only.
+#
+# INLINE ("TERNARY") IF
+# ---------------------
+#
+# The variable syntax supports a C-like "ternary IF" statement. The general
+# form is:
+#
+#     ${variable == SOMESTRING ? TRUESTRING : FALSESTRING}
+#     ${variable != SOMESTRING ? TRUESTRING : FALSESTRING}
+#
+# WARNING: When using a ternary IF, the string MUST be quoted in single quotes.
+# Otherwise, the YAML parser will barf (due to the embedded ":").
+#
+# White space is optional. Valid examples:
+#
+# 1. Substitute the string "FOO" if "$foo" equals "foo". Otherwise, substitute
+#    the string "BAR".
+#
+#    ${foo == "foo" ? "FOO" : "BAR"}
+#
+# 2. Substitute the string "-solution" if "notebook_type" is "answers".
+#    Otherwise, substitute nothing.
+#
+#    ${notebook_type=="answers"?"-solution":""}
+#
+# The strings (SOMESTRING, TRUESTRING, FALSESTRING) must use double quotes.
+# Single quotes are NOT supported.
+#
+# Braces are REQUIRED.
+#
+# INLINE EDIT DURING VARIABLE SUBSTITUTION
+# ----------------------------------------
+#
+# You can do some basic sed-like editing on a variable's value, using a
+# syntax that's vaguely reminiscent (but somewhat more readable) than
+# Bash's variable-editing syntax.
+#
+# Format:
+#
+#    ${var/regex/repl/flags}
+#    ${var|regex|repl|flags}
+#
+# In the regex and the replacement string, delimiters ("|" and "/") can be
+# escaped with a preceding "\". It's usually more readable to use the
+# alternate delimiter, though.
+#
+# In the replacement string, regex capture groups can be referenced with a "$"
+# syntax (e.g., "$1"). A literal "$" can be espressed as "\$".
+#
+# Flags (optional):
+#   i - case-independent matching
+#   g - replace all matches, not just the first
+#
+# Examples:
+#
+#    ${foo/^[a-z]/X/g}                    replace all lower case letters with X
+#    ${file|(\d+)(-.*)$|$1a-$2|}   Insert an "a" after any leading digits,
+#                                  and before the "-". e.g.: "01-Foobar"
+#                                  becomes "01a-Foobar".
+
+# -----------------------------------------------------------------------------
+
+
 # bdc_min_version:
 #
 #  The minimum version of bdc necessary to parse the build file. REQUIRED, as

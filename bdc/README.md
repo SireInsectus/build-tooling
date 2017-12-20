@@ -114,7 +114,134 @@ file, conventionally called `build.yaml`, is a YAML file describing the files
 that comprise a particular class. Each class that is to be built will have its 
 own build file.
 
-See [build.yaml](build.yaml) in this directory for a fully-documented example.
+See [build.yaml][] in this directory for a fully-documented example.
+
+### A note about variable substitution in `build.yaml`
+
+Many (but not all) items in a `build.yaml` file support variable substitution. 
+(See the sample [build.yaml][] for full details.)
+
+The variable substitution syntax is Unix shell-like:
+
+- `$var` substitutes the value of a variable called "var"
+- `${var}` substitute the value of a variable called "var"
+
+The second form is useful when you need to ensure that a variable's name
+doesn't get mashed together with a subsequent non-white space string, e.g.:
+
+- `${var}foo` substitutes the value of "var" preceding the string "foo"
+- `$varfoo` attempts to substitute the value of "varfoo"
+
+#### Variable names
+
+Legal variable names consist of alphanumeric and underscore characters only.
+
+#### Inline ("ternary") IF
+
+The variable syntax supports a C-like "ternary IF" statement. The general
+form is:
+
+```
+${variable == SOMESTRING ? TRUESTRING : FALSESTRING}
+${variable != SOMESTRING ? TRUESTRING : FALSESTRING}
+```
+
+Rules:
+
+1. The braces are _not_ optional.
+2. The strings (`SOMESTRING`, `TRUESTRING` and `FALSESTRING`) _must_ be
+   surrounded by double quotes. Single quotes are _not_ supported.
+3. The white space is optional.
+4. When using a ternary IF substitution, your _must_ surround the entire string
+   in **single quotes**. The string has to be quoted to prevent the YAML
+   parser from getting confused by the embedded ":" character.
+
+**Examples**:
+
+Substitute the string "FOO" if "$foo" equals "foo". Otherwise, substitute
+the string "BAR".
+
+```
+${foo == "foo" ? "FOO" : "BAR"}
+```
+
+Substitute the string "-solution" if "notebook_type" is "answers".
+Otherwise, substitute nothing.
+
+```
+${notebook_type=="answers"?"-solution":""}
+```
+
+#### Inline editing
+
+`bdc` supports basic sed-like editing on a variable's value, using a syntax
+that's vaguely reminiscent (but somewhat more readable) than the Bash
+variable-editing syntax.
+
+`bdc` supports a simple inline editing capability in variable substitution,
+reminiscent of the `bash` syntax (but a little easier to read). The basic
+syntax is:
+
+```
+${var/regex/replacement/flags}
+${var|regex|replacement|flags}
+```
+
+Note that only two delimiters are supported, "|" and "/", and they _must_
+match. 
+
+By default, the first instance of the regular expression in the variable's
+value is replaced with the replacement. (You can specify a global replacement
+with a flag. See `flags`, below.)
+
+**`regex`**
+
+`regex` is a [standard Python regular expression](https://docs.python.org/2/library/re.html#regular-expression-syntax).
+Within the pattern, you can escape the delimiter with a backslash. For instance:
+
+```
+${foo/abc\/def/abc.def/}
+```
+
+However, it's usually easier and more readable just to use the alternate
+delimiter:
+
+```
+${foo|abc/def|abc.def|}
+```
+
+**`replacement`**
+
+`replacement` is the replacement string. Within this string:
+
+* You can escape the delimiter with a leading backslash (though, as with
+  `regex`, it's usually more readable to use the alternate delimiter).
+* You can refer to regular expression groups as "$1", "$2", etc.
+* You can escape a literal dollar sign with a backslash.
+
+**`flags`**  
+
+Two optional flags are supported:
+
+* `i` - do case-blind matching
+* `g` - substitute all matches, not just the first one
+
+To specify both, just use `gi` or `ig`.
+
+**Examples**
+
+Assume the following variables:
+
+```
+foo: Hello
+filename: 01-Why-Spark.py
+basename: 01-Why-Spark
+```
+
+* `${filename/\d/X/}` yields "X1-Why-Spark.py"
+* `${filename/\d/X/g}` yields "XX-Why-Spark.py"
+* `${basename/(\d+)(-.*)$/$1s$2/` yields "01s-Why-Spark"
+* `${filename/\.py//}` yields "01-Why-Spark"
 
 ## Usage
 
@@ -262,3 +389,5 @@ host = https://trainers.cloud.databricks.com
 token = lsakdjfaksjhasdfkjhaslku89iuyhasdkfhjasd
 home = /Users/user@example.net
 ```
+
+[build.yaml](build.yaml)
