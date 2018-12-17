@@ -23,17 +23,51 @@ import re
 import codecs
 from enum import Enum
 from collections import namedtuple
-from string import Template
+from string import Template as StringTemplate
 from InlineToken import InlineToken, expand_inline_tokens
 from datetime import datetime
+from textwrap import TextWrapper
+from random import SystemRandom
 
-VERSION = "1.11.2"
+VERSION = "1.18.0"
 
 # -----------------------------------------------------------------------------
 # Enums. (Implemented as classes, rather than using the Enum functional
 # API, for ease of modification.)
 # -----------------------------------------------------------------------------
 
+class TargetProfile(Enum):
+    '''
+    The target output profile, currently either AZURE or AMAZON.
+    '''
+    AZURE = 'azure'
+    AMAZON = 'amazon'
+    NONE = 'none'
+
+class CourseType(Enum):
+    '''Type of course (ILT or self-paced)'''
+    SELF_PACED = 'self-paced'
+    ILT = 'ilt'
+    NONE = 'none'
+
+# Strictly speaking, this is not an enum, but it's here for convenience.
+# It maps target profile values to their in-cell keywords.
+
+LABEL_TO_TARGET_PROFILE = {
+    '{}_ONLY'.format(t.value.upper()): t for t in TargetProfile
+    if t is not TargetProfile.NONE
+}
+
+TARGET_PROFILE_TO_LABEL = {
+    v: k for k, v in LABEL_TO_TARGET_PROFILE.items()
+}
+
+# NOTE: If you add a new label, be sure to look at:
+#
+# - Notebook.generate
+# - Notebook._get_keep_labels()
+# - self.remove in Notebook.__init__()
+# - the regular expressions for the tags (search for "CommandLabel regexes")
 class CommandLabel(Enum):
     IPYTHON_ONLY      = 'IPYTHON_ONLY'
     PYTHON_ONLY       = 'PYTHON_ONLY'
@@ -42,6 +76,8 @@ class CommandLabel(Enum):
     SQL_ONLY          = 'SQL_ONLY'
     ANSWER            = 'ANSWER'
     TODO              = 'TODO'
+    AZURE_ONLY        = TARGET_PROFILE_TO_LABEL[TargetProfile.AZURE]
+    AMAZON_ONLY       = TARGET_PROFILE_TO_LABEL[TargetProfile.AMAZON]
     TEST              = 'TEST'
     PRIVATE_TEST      = 'PRIVATE_TEST'
     DATABRICKS_ONLY   = 'DATABRICKS_ONLY'
@@ -49,6 +85,9 @@ class CommandLabel(Enum):
     ALL_NOTEBOOKS     = 'ALL_NOTEBOOKS'
     INSTRUCTOR_NOTE   = 'INSTRUCTOR_NOTE'
     VIDEO             = 'VIDEO'
+    SOURCE_ONLY       = 'SOURCE_ONLY'
+    ILT_ONLY          = 'ILT_ONLY'
+    SELF_PACED_ONLY   = 'SELF_PACED_ONLY'
 
 class CommandCode(Enum):
     SCALA             = 'scala'
@@ -89,42 +128,43 @@ class NotebookUser(Enum):
 # Constants
 # -----------------------------------------------------------------------------
 
-def _s3_icon_url(image):
+def _icon_image_url(image):
     return (
-        'https://s3-us-west-2.amazonaws.com/curriculum-release/images/eLearning/' +
+        'https://files.training.databricks.com/static/images/' +
         image
     )
+
+def _label_for_course_type(course_type):
+    if course_type == CourseType.SELF_PACED:
+        return CommandLabel.SELF_PACED_ONLY
+    if course_type == CourseType.ILT:
+        return CommandLabel.ILT_ONLY
+    assert(False)
 
 INLINE_TOKENS = [
     InlineToken(
         title='Hint',
         tag=':HINT:',
-        image=_s3_icon_url('icon-light-bulb.svg'),
+        image=_icon_image_url('icon-light-bulb.svg'),
         template=r'<img alt="${title}" title="${title}" style="${style}" src="${image}"/>&nbsp;**${title}:**',
         style='height:1.75em; top:0.3em'
     ),
     InlineToken(
         title='Caution',
         tag=':CAUTION:',
-        image=_s3_icon_url('icon-warning.svg'),
+        image=_icon_image_url('icon-warning.svg'),
         style='height:1.3em; top:0.0em'
     ),
     InlineToken(
         tag=':BESTPRACTICE:',
         title='Best Practice',
-        image=_s3_icon_url('icon-blue-ribbon.svg'),
+        image=_icon_image_url('icon-blue-ribbon.svg'),
         style='height:1.75em; top:0.3em'
     ),
-    #InlineToken(
-    #    tag=':KEYPOINT:',
-    #    title='Key Point',
-    #    image=_s3_icon_url('icon-key.svg'),
-    #    style='height:1.3em; top:0.1.5em'
-    #),
     InlineToken(
         tag=':SIDENOTE:',
         title='Side Note',
-        image=_s3_icon_url('icon-note.webp'),
+        image=_icon_image_url('icon-note.webp'),
         style='height:1.75em; top:0.05em; transform:rotate(15deg)'
     ),
 ]
@@ -142,15 +182,20 @@ CODE_CELL_TYPES = {
 VALID_CELL_TYPES_FOR_LABELS = {
     CommandLabel.IPYTHON_ONLY:    CODE_CELL_TYPES | {CommandCode.MARKDOWN,
                                                      CommandCode.MARKDOWN_SANDBOX},
+    CommandLabel.ILT_ONLY:        ALL_CELL_TYPES,
+    CommandLabel.SELF_PACED_ONLY: ALL_CELL_TYPES,
+    CommandLabel.SOURCE_ONLY:     ALL_CELL_TYPES,
     CommandLabel.DATABRICKS_ONLY: ALL_CELL_TYPES,
     CommandLabel.PYTHON_ONLY:     ALL_CELL_TYPES,
     CommandLabel.SCALA_ONLY:      ALL_CELL_TYPES,
     CommandLabel.R_ONLY:          ALL_CELL_TYPES,
     CommandLabel.SQL_ONLY:        ALL_CELL_TYPES,
-    CommandLabel.ANSWER:          CODE_CELL_TYPES,
+    CommandLabel.ANSWER:          ALL_CELL_TYPES,
     CommandLabel.TODO:            CODE_CELL_TYPES,
     CommandLabel.TEST:            CODE_CELL_TYPES,
     CommandLabel.PRIVATE_TEST:    CODE_CELL_TYPES,
+    CommandLabel.AMAZON_ONLY:     ALL_CELL_TYPES,
+    CommandLabel.AZURE_ONLY:      ALL_CELL_TYPES,
     CommandLabel.INLINE:          ALL_CELL_TYPES,
     CommandLabel.INSTRUCTOR_NOTE: { CommandCode.MARKDOWN,
                                     CommandCode.MARKDOWN_SANDBOX },
@@ -175,20 +220,24 @@ DEFAULT_OUTPUT_DIR = 'build_mp'
 # VIDEO_TEMPLATE (a string template) requires ${id} and ${title}. ${title}
 # is currently ignored.
 VIDEO_TEMPLATE = (
-'''<script src="https://fast.wistia.com/embed/medias/${id}.jsonp" async></script>
-<script src="https://s3-us-west-2.amazonaws.com/files.training.databricks.com/courses/spark-sql/Wistia.js" async></script>
-<div class="wistia_embed wistia_async_${id}" style="height:360px;width:640px;color:red">
-  Error displaying video. Please click the link, below.
-</div>
+'''<iframe  
+src="//fast.wistia.net/embed/iframe/${id}?videoFoam=true"
+style="border:1px solid #1cb1c2;"
+allowtransparency="true" scrolling="no" class="wistia_embed"
+name="wistia_embed" allowfullscreen mozallowfullscreen webkitallowfullscreen
+oallowfullscreen msallowfullscreen width="640" height="360" ></iframe>
+<div>
 <a target="_blank" href="https://fast.wistia.net/embed/iframe/${id}?seo=false">
-<img style="width:16px" alt="Opens in new tab" src="''' + _s3_icon_url('external-link-icon.png') +
+  <img alt="Opens in new tab" src="''' + _icon_image_url('external-link-icon-16x16.png') +
 '''"/>&nbsp;Watch full-screen.</a>
-''')
+</div>''')
+
+VIDEO_CELL_CODE = CommandCode.MARKDOWN
 
 INSTRUCTOR_NOTE_HEADING = '<h2 style="color:red">Instructor Note</h2>'
 
 DEFAULT_NOTEBOOK_HEADING = """<div style="text-align: center; line-height: 0; padding-top: 9px;">
-  <img src="https://cdn2.hubspot.net/hubfs/438089/docs/training/dblearning-banner.png" alt="Databricks Learning" width="555" height="64">
+  <img src="https://databricks.com/wp-content/uploads/2018/03/db-academy-rgb-1200px.png" alt="Databricks Learning" style="width: 600px; height: 163px">
 </div>"""
 
 DEFAULT_NOTEBOOK_FOOTER = """&copy; {copyright_year} Databricks, Inc. All rights reserved.<br/>
@@ -234,12 +283,16 @@ class Params(object):
                  add_footer=False,
                  notebook_footer_path=None,
                  add_heading=False,
+                 target_profile=TargetProfile.NONE,
+                 course_type=CourseType.NONE,
                  notebook_heading_path=None,
                  encoding_in=DEFAULT_ENCODING_IN,
                  encoding_out=DEFAULT_ENCODING_OUT,
                  enable_verbosity=False,
                  enable_debug=False,
-                 copyright_year=None):
+                 copyright_year=None,
+                 enable_templates=False,
+                 extra_template_vars=None):
         self.path = path
         self.output_dir = output_dir or DEFAULT_OUTPUT_DIR
         self.databricks = databricks
@@ -263,6 +316,12 @@ class Params(object):
         self._notebook_footer = None
         self.notebook_footer_path = notebook_footer_path
         self.copyright_year = copyright_year or datetime.now().year
+        assert(course_type in set(CourseType))
+        self.course_type = course_type
+        assert(target_profile in set(TargetProfile))
+        self.target_profile = target_profile
+        self.enable_templates = enable_templates
+        self.extra_template_vars = extra_template_vars or {}
 
         for purpose, file in (('Notebook footer', notebook_footer_path),
                               ('Notebook header', notebook_heading_path)):
@@ -349,17 +408,22 @@ class NotebookGenerator(object):
 
         :param notebook_kind:  the NotebookKind
         :param notebook_user:  the NotebookUser
-        :param notebook_code:  the parsed notebook code
+        :param notebook_code:  the code type of the notebook (Scala, R, etc.)
         :param params:         parsed (usually command-line) parameters
         '''
         base_keep = set(CommandLabel.__members__.values())
-        self.keep_labels = self._get_labels(notebook_kind,
-                                            notebook_user,
-                                            notebook_code)
-        # discard labels not explicitly kept
+        self.keep_labels = self._get_keep_labels(params,
+                                                 notebook_kind,
+                                                 notebook_user,
+                                                 notebook_code)
+        # Discard any cells with a label that is not explicitly kept
         self.discard_labels = base_keep - self.keep_labels
+
+        # In kept cells, remove the following labels from the content
         self.remove = [_dbc_only, _scala_only, _python_only, _new_part, _inline,
-                       _all_notebooks, _instructor_note, _video]
+                       _all_notebooks, _instructor_note, _video,
+                       _azure_only, _amazon_only, _ilt_only, _self_paced_only]
+
         self.replace = [(_ipythonReplaceRemoveLine, ''),
                         _rename_public_test,
                         _rename_import_public_test]
@@ -369,12 +433,31 @@ class NotebookGenerator(object):
         self.file_ext = self._get_extension()
         self.base_comment = _code_to_comment[self.notebook_code]
         self.params = params
+        self.cell_template_processor = CellTemplateProcessor()
 
-    def _get_labels(self, *params):
-        labels = {CommandLabel.TEST, CommandLabel.INLINE}
-        for param in params:
-            label = NotebookGenerator.param_to_label[param]
+    def _get_keep_labels(self, params, *args):
+        labels = {
+            CommandLabel.TEST,
+            CommandLabel.INLINE,
+            CommandLabel.VIDEO
+        }
+        for arg in args:
+            label = NotebookGenerator.param_to_label[arg]
             labels.update(label)
+
+        # Keep the current content type:
+        if params.course_type == CourseType.SELF_PACED:
+            labels.add(CommandLabel.SELF_PACED_ONLY)
+        elif params.course_type == CourseType.ILT:
+            labels.add(CommandLabel.ILT_ONLY)
+
+        # Don't discard the profile labels.
+        for c in CommandLabel:
+            tp = LABEL_TO_TARGET_PROFILE.get(c.value)
+            if tp is not None:
+                # This is a target profile label. Mark it as kept.
+                labels.add(c)
+
         return labels
 
     def _get_extension(self):
@@ -394,10 +477,37 @@ class NotebookGenerator(object):
                 )
 
     def generate(self, header, commands, input_name, params, parts=True):
+        '''
+        Generate output notebook.
+
+        :param header:      the notebook header
+        :param commands:    the array of Command objects
+        :param input_name:  the source notebook name
+        :param params:      parsed command line parameters
+        :param parts:       whether to honor parts or not
+        '''
 
         _verbose('Generating {0} notebook(s) for "{1}"'.format(
             str(self.notebook_user), input_name
         ))
+
+        if params.enable_templates:
+            # Process the cell as a template.
+            new_commands = []
+            for cmd in commands:
+                if cmd.code.is_markdown():
+                    (new_code, new_content) = self.cell_template_processor.process(
+                        cmd.content, cmd.code, self.notebook_code, params,
+                    )
+                    new_commands.append(Command(
+                        part=cmd.part,
+                        code=new_code,
+                        labels=cmd.labels,
+                        content=new_content
+                    ))
+                else:
+                    new_commands.append(cmd)
+            commands = new_commands
 
         is_IPython = self.notebook_kind == NotebookKind.IPYTHON
         is_instructor_nb = self.notebook_user == NotebookUser.INSTRUCTOR
@@ -434,7 +544,6 @@ class NotebookGenerator(object):
                 file_out = file_out.replace('.py', '.ipynb')
 
             magic_prefix = '{0} MAGIC'.format(self.base_comment)
-
             with codecs.open(file_out, 'w', _file_encoding_out,
                              errors=_file_encoding_errors) as output:
 
@@ -508,6 +617,13 @@ class NotebookGenerator(object):
                         elif part < i:  # earlier parts will be chained in %run
                             continue
 
+                    if CommandLabel.SOURCE_ONLY in labels:
+                        # Suppress this one. It's a source-only cell.
+                        _debug("Cell #{} is source-only. Suppressing it.".format(
+                            cell_num
+                        ))
+                        continue
+
                     if CommandLabel.INSTRUCTOR_NOTE in labels:
                         # Special case processing: Add instructor note heading,
                         # and force use of %md-sandbox
@@ -518,14 +634,17 @@ class NotebookGenerator(object):
                             content
                         )
 
-                    # Expand inline callouts.
-                    (content, sandbox) = expand_inline_tokens(INLINE_TOKENS,
-                                                              content)
-                    if sandbox:
-                        code = CommandCode.MARKDOWN_SANDBOX
+                    if CommandLabel.TODO in labels:
+                        content = self._handle_todo_cell(cell_num, content)
+
+                    if code in (CommandCode.MARKDOWN, CommandCode.MARKDOWN_SANDBOX):
+                        # Expand inline callouts.
+                        (content, sandbox) = expand_inline_tokens(INLINE_TOKENS,
+                                                                  content)
+                        if sandbox:
+                            code = CommandCode.MARKDOWN_SANDBOX
 
                     inline = CommandLabel.INLINE in labels
-
                     discard_labels = self.discard_labels
 
                     all_notebooks = CommandLabel.ALL_NOTEBOOKS in labels
@@ -553,6 +672,39 @@ class NotebookGenerator(object):
                         # -- ALL_NOTEBOOKS
                         labels = labels - {CommandLabel.ALL_NOTEBOOKS}
 
+
+                    # Check for target profile label.
+                    remove_profile_cell = False
+                    cell_profile_labels = []
+                    for label in labels:
+                        lv = label.value
+                        cell_profile = LABEL_TO_TARGET_PROFILE.get(lv)
+                        if cell_profile is None:
+                            continue
+                        cell_profile_labels.append(lv)
+
+                        if ((params.target_profile is not TargetProfile.NONE) and
+                            (cell_profile != params.target_profile)):
+                            remove_profile_cell = True
+
+                    if len(cell_profile_labels) > 1:
+                        raise Exception(
+                            'Cell {} in {} has multiple profile tags: {}'.format(
+                                cell_num, input_name, ', '.join(cell_profile_labels)
+                            )
+                        )
+                    if remove_profile_cell:
+                        continue
+
+                    # Process the cell.
+
+                    if CommandLabel.VIDEO in labels:
+                        # First, handle the video cell expansion. Then, handle
+                        # the updated cell normally.
+                        content = self._handle_video_cell(cell_num, content)
+                        code = VIDEO_CELL_CODE
+                        _debug('Preprocessing video cell {}'.format(cell_num))
+
                     # This thing just gets uglier and uglier.
                     if ( (not (discard_labels & labels)) and
                          (((inline and code != self.notebook_code) or
@@ -578,15 +730,6 @@ class NotebookGenerator(object):
                         is_first = self._write_command(output, cell_split,
                                                        content, is_first)
 
-                    elif CommandLabel.VIDEO in labels:
-                        new_content = self._handle_video_cell(cell_num, content)
-                        new_cell = [
-                            '{0} MAGIC {1}'.format(self.base_comment, line)
-                            for line in ['%md-sandbox'] + new_content
-                        ]
-                        is_first = self._write_command(
-                            output, command_cell, new_cell + ['\n'], is_first
-                        )
 
                 # Optionally add the footer.
                 if params.add_footer:
@@ -601,6 +744,43 @@ class NotebookGenerator(object):
 
             if is_IPython:
                 self.generate_ipynb(file_out)
+
+    def _handle_todo_cell(self, cell_num, content):
+        # Special case processing for runnable To-Do cells: If
+        # every line in the cell starts with a comment character,
+        # remove the leading comment characters.
+        comment_start = re.compile(_comment_with_optional_blank)
+        def starts_with_comment(line):
+            if (comment_start.search(line) or
+                    (len(line.strip()) == 0)):
+                return True
+            else:
+                return False
+
+        label_regexes = [t[0] for t in Parser.pattern_to_label]
+        def matches_label(line):
+            for r in label_regexes:
+                if r.match(line):
+                    return True
+            return False
+
+        if all_pred(starts_with_comment, content):
+            _debug("Cell #{} is a runnable TODO cell.".format(cell_num))
+            new_content = []
+            for s in content:
+                if matches_label(s):
+                    # Don't edit labels.
+                    new_content.append(s)
+                elif len(s.strip()) == 0:
+                    new_content.append(s)
+                else:
+                    # Remove leading comment.
+                    m = comment_start.search(s)
+                    assert m is not None
+                    new_content.append(m.group(2))
+            return new_content
+
+        return content
 
     def _handle_test_cell(self, cell_num, content):
         new_content = []
@@ -641,7 +821,7 @@ class NotebookGenerator(object):
 
             args = arg_string.split(None, 1)
             (id, title) = args if len(args) == 2 else (args[0], "video")
-            expanded = Template(VIDEO_TEMPLATE).safe_substitute({
+            expanded = StringTemplate(VIDEO_TEMPLATE).safe_substitute({
                 'title': title,
                 'id':    id
             })
@@ -729,6 +909,242 @@ class NotebookGenerator(object):
 
         return modified_content
 
+
+class CellTemplateProcessor(object):
+    '''
+    Used to process cell Mustache templates.
+    '''
+
+    # The template for the JavaScript and the initial button that
+    # precedes an expanded hints cell. This is a Mustache template.
+    #
+    # Expected variables:
+    #
+    # id_prefix - HTML ID prefix to use (string). Must correspond to the
+    #             ID prefix used in the hints and the answer.
+    HINTS_PRELUDE_TEMPLATE = \
+'''<script type="text/javascript">
+  window.onload = function() {
+    var allHints = document.getElementsByClassName("hint-{{id_prefix}}");
+    var answer = document.getElementById("answer-{{id_prefix}}");
+    var totalHints = allHints.length;
+    var nextHint = 0;
+    var hasAnswer = (answer != null);
+    var items = new Array();
+    for (var i = 0; i < totalHints; i++) {
+      var elem = allHints[i];
+      var label = "";
+      if ((i + 1) == totalHints)
+        label = "Click here for the answer";
+      else
+        label = "Click here for the next hint";
+      items.push({label: label, elem: elem});
+    }
+    if (hasAnswer) {
+      items.push({label: '', elem: answer});
+    }
+
+    var button = document.getElementById("hint-button-{{id_prefix}}");
+    button.onclick = function() {
+      items[nextHint].elem.style.display = 'block';
+      if ((nextHint + 1) >= items.length)
+        button.style.display = 'none';
+      else
+        button.innerHTML = items[nextHint].label;
+        nextHint += 1;
+    };
+    button.ondblclick = function(e) {
+      e.stopPropagation();
+    }
+    var answerCodeBlocks = document.getElementsByTagName("code");
+    for (var i = 0; i < answerCodeBlocks.length; i++) {
+      var elem = answerCodeBlocks[i];
+      var parent = elem.parentNode;
+      if (parent.name != "pre") {
+        var newNode = document.createElement("pre");
+        newNode.append(elem.cloneNode(true));
+        elem.replaceWith(newNode);
+        elem = newNode;
+      }
+      elem.ondblclick = function(e) {
+        e.stopPropagation();
+      };
+
+      elem.style.marginTop = "1em";
+    }
+  };
+</script>
+
+<div>
+  <button type="button" class="btn btn-light"
+          style="margin-top: 1em"
+          id="hint-button-{{id_prefix}}">Click here for a hint</button>
+</div>
+'''
+
+    # The template for a single hint. This is a Mustache template.
+    #
+    # Expected variables:
+    #
+    # id_prefix - HTML ID prefix to use (string). Must correspond to the
+    #             ID prefix used in the JavaScript and the answer.
+    # hint      - the body of the hint
+    HINT_TEMPLATE = \
+'''<div class="hint-{{id_prefix}}" style="padding-bottom: 20px; display: none">
+  Hint:
+  <div style="margin-left: 1em">{{hint}}</div>
+</div>
+'''
+
+    # The template for an expanded answer.
+    #
+    # Expected variables:
+    #
+    # answer    - the answer body
+    # id_prefix - HTML ID prefix to use (string). Must correspond to the
+    #             ID prefix used in the JavaScript and the hint(s).
+    ANSWER_TEMPLATE = \
+'''<div id="answer-{{id_prefix}}" style="padding-bottom: 20px; display: none">
+  The answer:
+  <div class="answer" style="margin-left: 1em">
+{{answer}}
+  </div>
+</div>
+'''
+
+    def __init__(self):
+        self._id_prefix = None
+        self._found_hints = False
+        self._in_hints_block = False
+        self._total_hints = 0
+
+    def process(self, contents, cell_code, language, params):
+        '''
+        Runs a cell's content through the template processor.
+
+        :param contents:  the contents, a list of lines with no trailing newline
+        :param cell_code: the cell code (CommandCode.MARKDOWN,
+                          CommandCode.MARKDOWN_SANDBOX)
+        :param language:  output language (as a CommandCode) of the notebook being
+                          generated
+        :param params:    the parsed command line parameters
+
+        :return: a tuple with two elements: the possibly-changed command code
+                 (because certain expansions only work in %md-sandbox) and the new
+                 content as a list of lines with no trailing newline
+        '''
+        import pystache
+
+        self._found_hints = False
+        self._in_hints_block = False
+        self._total_hints = 0
+
+        s = '\n'.join(contents)
+        if params.target_profile == TargetProfile.NONE:
+            amazon = ''
+            azure = ''
+        elif params.target_profile == TargetProfile.AMAZON:
+            amazon = 'Amazon'
+            azure = ''
+        else:
+            amazon = ''
+            azure = 'Azure'
+
+        scala = False
+        python = False
+        r = False
+        sql = False
+        if language == CommandCode.SQL:
+            lang_string = "SQL"
+            sql = True
+        elif language == CommandCode.SCALA:
+            lang_string = "Scala"
+            scala = True
+        elif language == CommandCode.PYTHON:
+            lang_string = "Python"
+            python = True
+        elif language == CommandCode.R:
+            lang_string = "R"
+            r = True
+
+        def strip_leading_and_trailing_blank_lines(text):
+            import itertools
+
+            def drop_leading(lines):
+                return list(itertools.dropwhile(lambda s: len(s.strip()) == 0, lines))
+
+            lines = drop_leading(text.split('\n'))
+            lines.reverse()
+            lines = drop_leading(lines)
+            lines.reverse()
+            return '\n'.join(lines)
+
+
+        def handle_hints(text):
+            # Emit the prelude, which contains the JavaScript and the button.
+            # Then, pass the text along, for further expansion.
+            self._id_prefix = str(_rng.randint(0, 10000))
+            self._found_hints = True
+            self._in_hints_block = True
+            prelude_vars = {
+                'id_prefix': self._id_prefix
+            }
+            prelude = pystache.render(self.HINTS_PRELUDE_TEMPLATE, prelude_vars)
+            return prelude + strip_leading_and_trailing_blank_lines(text)
+
+        def handle_hint(text):
+            # The text is the body of the hint. Expand the hints template.
+            if not self._in_hints_block:
+                raise Exception('Found {{#HINT}} outside required {{#HINTS}} block.')
+
+            self._total_hints += 1
+            hint_vars = {
+                'id_prefix': self._id_prefix,
+                'hint':      strip_leading_and_trailing_blank_lines(text)
+            }
+            return pystache.render(self.HINT_TEMPLATE, hint_vars)
+
+        def handle_answer(text):
+            # The text is the body of the answer.
+
+            vars = {
+                'id_prefix': self._id_prefix
+            }
+
+            # Render the answer template.
+            vars['answer'] = strip_leading_and_trailing_blank_lines(text)
+            return pystache.render(self.ANSWER_TEMPLATE, vars)
+
+        vars = {
+            'amazon':            amazon,
+            'azure':             azure,
+            'copyright_year':    params.copyright_year,
+            'notebook_language': lang_string,
+            'HINT':              handle_hint,
+            'HINTS':             handle_hints,
+            'ANSWER':            handle_answer,
+            'r':                 r,
+            'scala':             scala,
+            'python':            python,
+            'sql':               sql
+        }
+
+        vars.update(params.extra_template_vars)
+        new_content = pystache.render(s, vars)
+
+        if self._found_hints:
+            if self._total_hints == 0:
+                raise Exception(
+                    'There must be at least one {{#HINT}} inside a {{#HINTS}} ' +
+                    'block.'
+                )
+            new_cell_code = CommandCode.MARKDOWN_SANDBOX
+        else:
+            new_cell_code = cell_code
+
+        return (new_cell_code, new_content.split('\n'))
+
+
 # -----------------------------------------------------------------------------
 # Globals and Functions
 # -----------------------------------------------------------------------------
@@ -739,21 +1155,56 @@ _file_encoding_errors = 'strict'
 _output_dir = DEFAULT_OUTPUT_DIR
 _be_verbose = False
 _show_debug = False
+_rng = SystemRandom()
+
+COLUMNS = int(os.getenv('COLUMNS', '79'))
+DEBUG_PREFIX = "master_parse (DEBUG) "
+VERBOSE_PREFIX = "master_parse: "
+
+# Text wrappers
+
+_error_wrapper = TextWrapper(width=COLUMNS)
+
+_verbose_wrapper = TextWrapper(width=COLUMNS,
+                               subsequent_indent=' ' * len(VERBOSE_PREFIX))
+
+_debug_wrapper = TextWrapper(width=COLUMNS,
+                             subsequent_indent=' ' * len(DEBUG_PREFIX))
 
 def _debug(msg):
     if _show_debug:
-        print("master_parse: (DEBUG) {0}".format(msg))
+        print(_debug_wrapper.fill("{0}{1}".format(DEBUG_PREFIX, msg)))
+
 
 def _verbose(msg):
     if _be_verbose:
-        print("master_parse: {0}".format(msg))
+        print(_verbose_wrapper.fill("{0}{1}".format(VERBOSE_PREFIX, msg)))
 
 
 # Regular Expressions
 _comment = r'(#|//|--)' # Allow Python, Scala, and SQL style comments
+_comment_with_optional_blank = r'^\s*(#|//|--)\s?(.*)$'
 _line_start = r'\s*{0}+\s*'.format(_comment)  # flexible format
 _line_start_restricted = r'\s*{0}\s*'.format(_comment)  # only 1 comment allowed
 
+# COPIED FROM bdc CODE. Should be shared, but there's no simple way to do that
+# right now.
+def all_pred(func, iterable):
+    """
+    Similar to the built-in `all()` function, this function ensures that
+    `func()` returns `True` for every element of the supplied iterable.
+    It short-circuits on the first failure.
+
+    :param func:     function or lambda to call with each element
+    :param iterable: the iterable
+
+    :return: `True` if all elements pass, `False` otherwise
+    """
+    for i in iterable:
+        if not func(i):
+            return False
+
+    return True
 
 def or_magic(re_text):
     """Create a regular expression for matching MAGIC (%cells) and code cells.
@@ -818,10 +1269,12 @@ def make_magic(regex_token, must_be_word=False):
     regex_text = r'\s*' + adj_token + r'\s*(.*)$'
     return re.compile(make_magic_text(regex_text))
 
-
 _databricks = make_re(r'Databricks')
 _command = make_re(r'COMMAND')
 
+# CommandLabel regexes
+#
+# See also the Parser class.
 _answer = or_magic(CommandLabel.ANSWER.value)
 _private_test = or_magic(CommandLabel.PRIVATE_TEST.value)
 _todo = or_magic(CommandLabel.TODO.value)
@@ -829,6 +1282,11 @@ _dbc_only = or_magic(CommandLabel.DATABRICKS_ONLY.value)
 _ipython_only = or_magic(CommandLabel.IPYTHON_ONLY.value)
 _python_only = or_magic(CommandLabel.PYTHON_ONLY.value)
 _scala_only = or_magic(CommandLabel.SCALA_ONLY.value)
+_amazon_only = or_magic(CommandLabel.AMAZON_ONLY.value)
+_azure_only = or_magic(CommandLabel.AZURE_ONLY.value)
+_ilt_only = or_magic(CommandLabel.ILT_ONLY.value)
+_self_paced_only = or_magic(CommandLabel.SELF_PACED_ONLY.value)
+_source_only = or_magic(CommandLabel.SOURCE_ONLY.value)
 _sql_only = or_magic(CommandLabel.SQL_ONLY.value)
 _r_only = or_magic(CommandLabel.R_ONLY.value)
 _new_part = or_magic(r'NEW_PART')
@@ -1021,6 +1479,11 @@ class Parser:
                         (_ipython_only, CommandLabel.IPYTHON_ONLY),
                         (_scala_only, CommandLabel.SCALA_ONLY),
                         (_python_only, CommandLabel.PYTHON_ONLY),
+                        (_amazon_only, CommandLabel.AMAZON_ONLY),
+                        (_azure_only, CommandLabel.AZURE_ONLY),
+                        (_ilt_only, CommandLabel.ILT_ONLY),
+                        (_self_paced_only, CommandLabel.SELF_PACED_ONLY),
+                        (_source_only, CommandLabel.SOURCE_ONLY),
                         (_r_only, CommandLabel.R_ONLY),
                         (_all_notebooks, CommandLabel.ALL_NOTEBOOKS),
                         (_instructor_note, CommandLabel.INSTRUCTOR_NOTE),
@@ -1072,7 +1535,7 @@ class Parser:
         self.part = 0
         self.header = None
 
-    def generate_commands(self, file_name):
+    def generate_commands(self, file_name, params):
         """Generates file content for DBC and ipynb use.
 
         Note:
@@ -1117,6 +1580,7 @@ class Parser:
                           cell_state.command_code,
                           cell_state.command_labels,
                           cell_state.command_content)
+
             commands.append(cmd)
 
         _, file_extension = os.path.splitext(file_name)
@@ -1222,6 +1686,8 @@ def process_notebooks(params):
     global _show_debug
     _show_debug = params.enable_debug
 
+    if (params.course_type is None) or (params.course_type == CourseType.NONE):
+        raise UsageError('course_type must be set.')
     if not (params.databricks or params.ipython):
         raise UsageError("Specify at least one of databricks or ipython")
     if not (params.scala or params.python or params.r or params.sql):
@@ -1232,7 +1698,7 @@ def process_notebooks(params):
     if os.path.isdir(params.path):
         files = []
         for p in ['*.py', '*.scala', '*.r', '*.sql']:
-            files.extend(glob.glob(os.path.join(path, p)))
+            files.extend(glob.glob(os.path.join(params.path, p)))
     else:
         files = [params.path]
 
@@ -1279,7 +1745,7 @@ def process_notebooks(params):
 
     parser = Parser()
     for db_src in files:
-        header, commands = parser.generate_commands(db_src)
+        header, commands = parser.generate_commands(db_src, params)
         for notebook in notebooks:
             notebook.generate(header, commands, db_src, params)
 
@@ -1304,31 +1770,55 @@ def main():
     targetGroup.add_argument('-ip', '--ipython',
                              help='generate ipython notebook(s)',
                              action='store_true')
+
     codeGroup = arg_parser.add_argument_group('code')
-    codeGroup.add_argument('-sc', '--scala',
-                           help='generate scala notebook(s)',
-                           action='store_true')
     codeGroup.add_argument('-py', '--python',
                            help='generate python notebook(s)',
                            action='store_true')
     codeGroup.add_argument('-r', '--rproject',
                            help='generate r notebook(s)',
                            action='store_true')
+    codeGroup.add_argument('-sc', '--scala',
+                           help='generate scala notebook(s)',
+                           action='store_true')
     codeGroup.add_argument('-sq', '--sql',
                            help='generate sql notebook(s)',
                            action='store_true')
+
     userGroup = arg_parser.add_argument_group('user')
-    userGroup.add_argument('-in', '--instructor',
-                           help='generate instructor notebook(s)',
+    userGroup.add_argument('-an', '--answers',
+                           help='generate answers notebook(s)',
                            action='store_true')
     userGroup.add_argument('-ex', '--exercises',
                            help='generate exercises notebook(s)',
                            action='store_true')
-    userGroup.add_argument('-an', '--answers',
-                           help='generate answers notebook(s)',
+    userGroup.add_argument('-in', '--instructor',
+                           help='generate instructor notebook(s)',
                            action='store_true')
+
     arg_parser.add_argument('-cc', '--creativecommons',
                             help='add by-nc-nd cc 4.0 license',
+                            action='store_true')
+    arg_parser.add_argument('--copyright',
+                            help='Set the copyright year for any generated ' +
+                                 'copyright notices. Default is current year.',
+                            default=datetime.now().year,
+                            action='store',
+                            metavar='YEAR')
+    arg_parser.add_argument('-ct', '--course-type',
+                            help='Course type, either "ilt" or "self-paced". ' +
+                                 'Default: "self-paced"',
+                            metavar="<coursetype>",
+                            choices=('ilt', 'self-paced'),
+                            default='self-paced')
+    arg_parser.add_argument('-d', '--dir',
+                            help="Base output directory. Default: {0}".format(
+                                DEFAULT_OUTPUT_DIR),
+                            action='store',
+                            dest='output_dir',
+                            metavar="OUTPUT_DIR")
+    arg_parser.add_argument('-D', '--debug',
+                            help="Enable debug messages",
                             action='store_true')
     arg_parser.add_argument('-ei', '--encoding-in',
                             help="input file encoding",
@@ -1340,12 +1830,18 @@ def main():
                             action='store',
                             default=DEFAULT_ENCODING_OUT,
                             metavar="ENCODING")
-    arg_parser.add_argument('--copyright',
-                            help='Set the copyright year for any generated ' +
-                                 'copyright notices. Default is current year.',
-                            default=datetime.now().year,
-                            action='store',
-                            metavar='YEAR')
+    arg_parser.add_argument('--footer',
+                            help='By default, even if you specify -nf, this ' +
+                                 'tool does not add the notebook footer to ' +
+                                 'bottom of generated notebooks. If you ' +
+                                 'specify this option, it will do so.',
+                            action='store_true')
+    arg_parser.add_argument('--heading',
+                            help='By default, even if you specify -nh, this ' +
+                                 'tool does not add the notebook heading to ' +
+                                 'top of generated notebooks. If you specify ' +
+                                 'this option, it will do so.',
+                            action='store_true')
     arg_parser.add_argument('-nf', '--notebook-footer',
                             help='A file containing Markdown and/or HTML, to ' +
                                  'be used as the bottom-of-notebook footer, ' +
@@ -1354,12 +1850,6 @@ def main():
                                  'is used. See also --footer and --copyright.',
                             default=None,
                             metavar="<file>")
-    arg_parser.add_argument('--footer',
-                            help='By default, even if you specify -nf, this ' +
-                                 'tool does not add the notebook footer to ' +
-                                 'bottom of generated notebooks. If you ' +
-                                 'specify this option, it will do so.',
-                            action='store_true')
     arg_parser.add_argument('-nh', '--notebook-heading',
                             help='A file containing Markdown and/or HTML, ' +
                                  'to be used as the top-of-notebook heading, ' +
@@ -1368,30 +1858,70 @@ def main():
                                  '--heading.',
                             default=None,
                             metavar="<file>")
-    arg_parser.add_argument('--heading',
-                            help='By default, even if you specify -nh, this ' +
-                                 'tool does not add the notebook heading to ' +
-                                 'top of generated notebooks. If you specify ' +
-                                 'this option, it will do so.',
+    arg_parser.add_argument('--templates',
+                            help='Enable cell templates. If enabled, each ' +
+                                 'cell is run through a Mustache template ' +
+                                 'parser, and internal variables (plus ' +
+                                 'passed via --variables) are available).',
                             action='store_true')
-    arg_parser.add_argument('-d', '--dir',
-                            help="Base output directory. Default: {0}".format(
-                                DEFAULT_OUTPUT_DIR),
-                            action='store',
-                            dest='output_dir',
-                            metavar="OUTPUT_DIR")
-    arg_parser.add_argument('-D', '--debug',
-                            help="Enable debug messages",
-                            action='store_true')
+    arg_parser.add_argument('-tp', '--target-profile',
+                            help="Target output profile, if any. Valid " +
+                                 "values: amazon, azure",
+                            metavar="<profile>",
+                            choices=('amazon', 'azure'),
+                            default=None)
     arg_parser.add_argument('-v', '--verbose',
                             help="Enable verbose messages.",
                             action='store_true')
+    arg_parser.add_argument('--variable',
+                            help='Specify an additional variable for the ' +
+                                 'cell template processor. Ignored unless ' +
+                                 '--template is specified. Can be specified ' +
+                                 'multiple times. Format: "var=value", "var", '+
+                                 'or "!var". "var=value" defines key "var" ' +
+                                 'with string value "value". "var" defines ' +
+                                 'key "var" with value True. "!var" defines ' +
+                                 'key "var" with value False.',
+                            metavar="<var:value>",
+                            action='append',
+                            default=None)
+
 
     args = arg_parser.parse_args()
 
     if args.version:
-        print('Master Parse tool, version {0}'.format(VERSION))
+        print(VERSION)
         sys.exit(0)
+
+    if (not args.templates) and args.variable:
+        print("WARNING: --variable is ignored unless --template is specified.")
+
+    extra_template_vars = None
+    if args.templates:
+        if args.variable:
+            extra_template_vars = {}
+            valid_key = re.compile('^[a-zA-Z][a-zA-Z0-9_]*$')
+            for s in args.variable:
+                kv = s.split('=')
+                key = value = None
+                length = len(kv)
+                if length == 2:
+                    key, value = kv
+                elif (length == 1):
+                    k = kv[0].strip()
+                    if len(k) == 0:
+                        arg_parser.error('Badly formatted variable: "{}"'.format(kv))
+                    elif k[0] == '!':
+                        key, value = k[1:], False
+                    else:
+                        key, value = k, True
+                else:
+                    arg_parser.error('Badly formatted variable: "{}"'.format(kv))
+
+                if not valid_key.search(key):
+                    arg_parser.error('Invalid variable key: {}'.format(key))
+
+                extra_template_vars[key] = value
 
     if not (args.databricks or args.ipython):
         arg_parser.error('at least one of -db or -ip is required')
@@ -1404,6 +1934,15 @@ def main():
 
     if not args.filename:
         arg_parser.error('Missing notebook path.')
+
+    if args.target_profile:
+        target_profiles = { t.value : t for t in TargetProfile if t != TargetProfile.NONE }
+        args.target_profile = target_profiles[args.target_profile]
+    else:
+        args.target_profile = TargetProfile.NONE
+
+    course_types = { c.value : c for c in CourseType if c != CourseType.NONE }
+    course_type = course_types[args.course_type]
 
     params = Params(
         path=args.filename,
@@ -1426,7 +1965,11 @@ def main():
         encoding_out=args.encoding_out,
         enable_verbosity=args.verbose,
         enable_debug=args.debug,
-        copyright_year=args.copyright
+        copyright_year=args.copyright,
+        target_profile=args.target_profile,
+        course_type=course_type,
+        enable_templates=args.templates,
+        extra_template_vars=extra_template_vars
     )
 
     try:

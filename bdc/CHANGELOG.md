@@ -1,5 +1,120 @@
 # Change Log for BDC
 
+### Version 1.25.0
+
+- In `misc_files`, if the destination does not have an extension, it is now
+  assumed to be a directory, and `dest_is_dir` is inferred to be true.
+  You can force it to be false, if need be, but only if the destination
+  doesn't have an extension.
+
+### Version 1.24.1
+
+- Fixed a misleading error message when `misc_files` specifies a target
+  destination of directory, but `dest_is_dir` isn't set.
+
+### Version 1.24.0
+
+- The `zipfile` and `dest` in the `bundle` section can now substitute the
+  current output profile ("amazon" or "azure").
+
+### Version 1.23.2
+
+- Fixed handling of `DB_SHARD_HOME` to ensure that the environment variable
+  actually has a non-empty value, not just that it is present.
+
+### Version 1.23.1
+
+- Fixed to pass `notebook_defaults.variables` variables into the master
+  parser, making them available to Markdown cell templates.
+  
+### Version 1.23.0
+
+- Fixed a (newly introduced) bug that caused an abort when copying instructor
+  notes.
+- `misc_files` templates are now Mustache templates, not Python string templates.
+- Instructor notes and guides are now converted to HTML and PDF, where
+  appropriate, just like other docs. 
+
+### Version 1.22.0
+
+- Added ability for files in `misc_files` section to be templates, with
+  variables substituted in them. See the sample `build.yaml` for details.
+- Added ability to generate PDF from a Markdown or HTML miscellaneous file.
+- Added a `bundle` section, allowing a zip file of built materials to be
+  generated automatically. See the sample `build.yaml` for details.
+- The `master` (for a notebook or in `notebook_defaults`) now supports
+  an `enable_templates` flag. If set to `true`, Markdown cells in the
+  notebook are treated as [Mustache](http://mustache.github.io/mustache.5.html)
+  templates by the master parser. (The flag is `false` by default.)
+- It is now possible to specify the name of the student DBC, via a new
+  `student_dbc` build parameter; it defaults to `Labs.dbc`.
+- Similarly, it is now possible to specify the name of the student DBC, via a
+  new `instructor_dbc` build parameter; it defaults to `Instructor-Labs.dbc`.
+- Added some parse-time validation of the source files (and required `README.md`
+  and `LICENSE.md`) for the `datasets` section.
+- The `README.md` and `LICENSE.md` files for each data set are also converted
+  to HTML and PDF and copied.  
+- HTML generated from Markdown now gets anchor links for each generated HTML
+  header.
+- `course_info` now supports a `title` attribute.
+
+### Version 1.21.0
+
+- Added `course_info.type` build setting, which can be `ilt` or `self-paced`.
+  This `build.yaml` setting is now required.
+
+### Version 1.20.0
+
+- Added `--info` and `--shell` command line parameters.
+
+### Version 1.19.0
+
+- Added ability to specify `debug: true` in a `master` section to enable
+  master parse-level debug messages for individual notebooks. 
+
+### Version 1.18.2
+
+Fixed bug relating to upload and download capability: If two notebooks
+with separate profiles ("amazon" and "azure") map to the same `dest` value,
+`bdc` would overwrite one of them during the upload and would arbitrarily
+choose one on the download. Now, it adds an "az" or "am" qualifier to the
+uploaded file. For instance, assume `build.yaml` has these two notebooks (and
+assume typical values in `notebook_defaults`):
+  
+```
+  - src: 02-ETL-Process-Overview-az.py
+    dest: ${target_lang}/02-ETL-Process-Overview.py
+    only_in_profile: azure
+
+  - src: 02-ETL-Process-Overview-am.py
+    dest: ${target_lang}/02-ETL-Process-Overview.py
+    only_in_profile: amazon
+```  
+
+Both notebooks map to the same build destination. `bdc --upload` will upload
+`02-ETL-Process-Overview-az.py` as `01-az-ETL-Process-Overview.py`, and it will
+upload `02-ETL-Process-Overview-am.py` as `01-am-ETL-Process-Overview.py`.
+
+`bdc` always applies the `am` or `az` prefix, if `only_in_profile` is specified,
+even if there are no destination conflicts. The prefix is placed _after_ any
+numerals in the destination file name; if there are no numerals, it's placed
+at the beginning.
+
+### Version 1.18.1
+
+* Fixed bug: `databricks` command profile wasn't being passed all the places
+  it should've been.
+  
+### Version 1.18.0
+
+* `--upload` and `--download` now honor a `--dbprofile` option to specify
+  the authentication profile to use with the `databricks-cli`. This option
+  corresponds directly to the `--profile` argument to the `databricks` command.
+
+### Version 1.17.0
+
+* Added support for Amazon and Azure target profiles.
+
 ### Version 1.16.0
 
 * Variables can now be defined in the `notebook_defaults` section and in the

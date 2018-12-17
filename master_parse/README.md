@@ -10,6 +10,8 @@ It can be used as a command or as a library.
 
 The tool is usable from either Python 2 or Python 3.
 
+---
+
 ## Installation
 
 To install, run
@@ -19,6 +21,8 @@ python setup.py install
 ```
 
 The setup file installs all required packages, as well as `master_parse`.
+
+---
 
 ## Command line use
 
@@ -44,6 +48,11 @@ More than one option may be specified.
 
 ### Target audience group
 
+* `-ct` or `--course-type`: Specifies the course type, ILT ("ilt") or
+  Self-paced ("self-paced"). The value of this argument controls how
+  the `ILT_ONLY` and `SELF_PACED_ONLY` tags are processed. If not specified,
+  "self-paced" is the default.
+  
 * `-in` or `--instructor`: Generate instructor notebooks (notebooks ending
   with `_instructor`). Instructor notebooks contain all instructor note cells
   and all answer cells. Exercise cells (those marked `TODO`) are omitted.
@@ -79,6 +88,15 @@ More than one option may be specified.
   tool does _not_ add the notebook heading at the top of the generated
   notebooks. You need to specify `--heading` to force that behavior.
   (This preserves historical behavior better.)
+* `--templates`: Enable cell templates. See [below](#cells-as-templates)
+  for details.
+* `-tp PROFILE` or `--target-profile PROFILE`: Target output profile, if any.
+  Valid values: amazon, azure
+* `--variable <var>`: Supply an initial variable for template substitution.
+  Can be used multiple times. `<var>` can be one of:
+    - `var=value`: define `var` to substitute the string "value"
+    - `var`: define `var` as `True`
+    - `!var`: define `var` as `False`
 
 ### Filename group
 
@@ -86,6 +104,8 @@ More than one option may be specified.
 * `-v` or `--version` tells `master_parse` to display its version and exit.
   This option is mutually exclusive with `<filename>`.
 
+
+---
 
 ## Library use
 
@@ -97,7 +117,9 @@ master_parse.process_notebooks(args)
 The arguments correspond to the command line parameters. See the source for
 details.
 
-## Notebook metadata
+---
+
+## Notebook Processing
 
 The tool looks for various labels, as well as language-specific tokens, within
 notebook cells.
@@ -137,12 +159,43 @@ Master parse labels are cells that are marked with special tokens that only
 the master parse tool recognizes. Some labels make sense only in code cells.
 Others can be used in code cells, Markdown cells, etc.
 
-All  labels _must_ be preceded by a single command character, and the comment
-character must be correct for the notebook type. That is, a Python notebook
-(ending in `.py`) always uses "#" as the comment character. This is true
-even in Markdown cells.
+All labels _must_ be preceded by a comment sequence. For instance:
 
-Cells not marked with any label appear in _all_ outputs.
+```
+# TODO
+// TODO
+-- TODO
+```
+
+Labels must appear on a line by themselves. Thus, use:
+
+```
+%md
+// SCALA_ONLY
+```
+
+not 
+
+```
+%md // SCALA_ONLY
+```
+
+
+#### Unlabeled
+
+Cells not marked with any label are handled specially, depending on the cell
+type:
+
+* `%md`, `%md-sandbox`: Markdown cells appear in all output notebooks, unless
+  suppressed, for example, with `SCALA_ONLY`, `PYTHON_ONLY`,
+  `INSTRUCTOR_NOTE`, etc.
+  
+* `%fs` and `%sh` cells appear in all output notebooks, unless explicitly
+  suppressed.
+  
+* Code cells only appear in the output notebook for their language, unless
+  marked with `ALL_NOTEBOOKS`. Thus, a Scala cell only shows up in Scala 
+  notebooks, unless marked with `ALL_NOTEBOOKS`.
 
 #### Examples
 
@@ -180,7 +233,7 @@ In a Python code cell, this is not valid Master Parse Tool syntax and will simpl
 
 The valid labels are:
 
-**IPYTHON\_ONLY**
+##### IPYTHON\_ONLY
 
 **This cell type is _deprecated_ and will be removed in a future release of
 this tool. Use of it will generate warnings.**
@@ -188,31 +241,87 @@ this tool. Use of it will generate warnings.**
 Cells which need to be in IPython (or Jupyter) notebooks only.
 If IPython notebooks aren't being generated, these cells are stripped out.
 
-**DATABRICKS\_ONLY**
+##### DATABRICKS\_ONLY
 
 **This cell type is _deprecated_ and will be removed in a future release of
 this tool. Use of it will generate warnings.**
 
 Cells which need to be in Databricks notebooks only.
 
-**SCALA\_ONLY**, **PYTHON\_ONLY**, **SQL\_ONLY**, **R\_ONLY**
+##### SCALA\_ONLY, PYTHON\_ONLY, SQL\_ONLY, R\_ONLY
 
-Cells marked with this show up only when generating notebooks for _lang. These
+Cells marked with this show up only when generating notebooks for _lang_. These
 are for special cells (like Markdown cells, `%fs` cells, `%sh` cells) that you
 want to include on a language-dependent basis. For example, if a Markdown cell
 is different for Scala vs. Python, then you can create two `%md` cells, with
 one marked PYTHON_ONLY and the other marked SCALA_ONLY.
 
-**TODO**
+##### AMAZON\_ONLY, AZURE\_ONLY
+
+Cells marked with `AMAZON_ONLY` only show up when building for target profile
+`amazon`. Cells marked with `AZURE_ONLY` only show up when building for
+target profile `azure`.
+
+See the `-tp` command line option (in
+[Miscellaneous options](#miscellaneous-options), above) or the 
+`bdc` setting `only_in_profile` (in the `bdc`
+[Notebooks](../bdc/README.md#notebooks) section).
+
+
+##### TODO
 
 Cells show up only in exercise notebooks. These cells are usually
 exercises the user needs to complete.
 
-**ANSWER**
+As a special case, if the entire TODO cell is comment out, the master parser
+will strip the first level of comments. This allows for runnable TODO cells
+in source notebooks. Thus, the following three TODO cells are functionally
+equivalent in the output notebooks:
+
+Not runnable in source notebook:
+
+```python
+# TODO
+x = FILL_THIS_IN
+```
+
+Runnable in source notebook:
+
+```python
+# TODO
+#x = FILL_THIS_IN
+```
+
+```python
+# TODO
+# x = FILL_THIS_IN
+```
+
+All three cells will render as follows in the Python answers output notebook:
+
+```python
+# TODO
+x = FILL_THIS_IN
+```
+
+**NOTES**:
+
+1. When you create a runnable TODO cell, you can use at most one blank
+   character after the leading comment. (The blank is optional.) The master
+   parser will remove the leading comment and, optionally, one subsequent
+   blank from every commented line _except_ for the line with the "TODO"
+   marker.
+
+2. Do **not** precede `TODO` with multiple comment characters, even in a
+   runnable `TODO` cell.. It won't work.  That is, use `// TODO` or `# TODO`,
+   not `// // TODO` or `# # TODO`. The latter won't be recognized as a
+   proper TODO cell.
+
+##### ANSWER
 
 Cells show up only in instructor and answer notebooks.
 
-**TEST**
+##### TEST
 
 These cells identify tests and usually follow an exercise cell. Test cells
 provide a means for a student to test the solution to an exercise. You can
@@ -235,11 +344,11 @@ will be emitted, in the generated notebooks, as:
 ```
 
 
-**PRIVATE\_TEST**
+##### PRIVATE\_TEST
 
 Cells show up in instructor/answer notebooks.
 
-**VIDEO**
+##### VIDEO
 
 Valid only in Markdown cells, this command is replaced with HTML for a
 large video button. When clicked, the button launches a new tab to the
@@ -248,13 +357,30 @@ is the link to the video. The title (optional) is the video's title which,
 if present, will appear in the button. If no title is supplied, the button
 will not contain a title.
 
-**INSTRUCTOR_NOTE**
+##### INSTRUCTOR_NOTE
 
 Valid only in Markdown cells, this command causes the cell to be copied into
 the answer, or instructor, notebook and omitted from the student notebook.
 An "Instructor Note" header will automatically be added to the cell.
 
-**ALL_NOTEBOOKS**
+##### SOURCE_ONLY
+
+Valid in any cell, this tag marks a cell as a source-only cell. Source-only
+cells are _never_ copied to output notebooks. Source-only cells are useful 
+for many things, such as cells with credentials that are only to be used
+during curriculum development.
+
+##### ILT_ONLY
+
+An `ILT_ONLY` cell is only copied to output notebooks if the course type
+is "ilt". See the `-ct` (`--content-type`) command line parameter.
+
+##### SELF_PACED_ONLY
+
+An `SELF_PACED_ONLY` cell is only copied to output notebooks if the course type
+is "self-paced". See the `-ct` (`--content-type`) command line parameter.
+
+##### ALL_NOTEBOOKS
 
 The cell should be copied into all generated notebooks, regardless of language.
 Consider the following code in a Scala notebook:
@@ -270,7 +396,7 @@ instructor and student notebooks, that cell will appear in the generated Scala
 notebooks (instructor _and_ answers) as well in the generated Python notebooks
 (instructor _and_ answers).
 
-**INLINE**
+##### INLINE
 
 **This cell type is _deprecated_ and will be removed in a future release of
 this tool. Use of it will generate warnings.**
@@ -303,7 +429,7 @@ Meanwhile, the opposite happens with the second cell. Because the second cell
 is Scala, but is marked as `// INLINE`, it is _only_ written to non-Scala
 output notebooks.
 
-**NEW_PART**
+##### NEW_PART
 
 Start a new part of the lab. A lab can be divided into multiple parts with each
 part starting with a cell labeled `NEW_PART`. Every time the tool encounters a `NEW_PART`
@@ -340,4 +466,211 @@ We're talking about life here, people. This is some important stuff. Pay attenti
 
 Currently, these tokens render as follows, in a `%md-sandbox` cell:
 
-![](https://raw.githubusercontent.com/bmc/build-tooling/master/master_parse/images/tokens-rendered.png)
+![](https://files.training.databricks.com/images/tooling/tokens-rendered.png)
+
+### Cells as templates
+
+The master parser supports treating Markdown cells (`%md` and `%md-sandbox`
+cells) as _templates_. This feature is disabled by default, but it can be 
+enabled:
+
+- on a per-notebook basis in `build.yaml`, by setting the 
+  [`enable_templates`](../bdc/README.md#enable_templates) field in the
+  `master` section;
+- via the `--templates` command line option, if you're calling the master
+  parser from the command line; or
+- via a parameter setting to the API, if you're calling the master parser
+  programmatically.
+
+When templates are enabled, Markdown cells are treated as 
+[Mustache][] templates. Its use, in notebook cells, allows you to:
+ 
+- **do conditional substitution**. For instance, insert this sentence if
+  building for Azure, but use this other sentence if building for Amazon.
+- **do token substitution**. For instance, substitute the current value of
+  this parameter here.
+  
+See [below](#basic-mustache-syntax) for a brief introduction to Mustache
+syntax.
+
+#### Variables you can test or substitute
+
+The master parser defines the following variables automatically:
+
+- `amazon`: Set to "Amazon" (which also evaluates as `true` in a template),
+  if building for Amazon. Otherwise, set to an empty string (which also 
+  evaluates as `false` in a template).
+- `azure`: Set to "Azure" (which also evaluates as `true` in a template),
+  if building for Azure. Otherwise, set to an empty string (which also 
+  evaluates as `false` in a template).
+- `copyright_year`: The value of the copyright year parameter.
+- `notebook_language`: The programming language of the notebook being
+  generated (e.g., "Scala", "Python", "R", "SQL".)
+- `scala`: `true` if the output notebook is Scala, `false` otherwise.
+- `python`: `true` if the output notebook is Python, `false` otherwise.
+- `r`: `true` if the output notebook is R, `false` otherwise.
+- `sql`: `true` if the output notebook is SQL, `false` otherwise.
+
+In addition, you can substitute any variables defined in the `bdc` build file's
+[`variables` section](../bdc/README.md#variables-and-cell-templates).
+
+If calling the master parser from the command line, there's a `--variable`
+parameter that allows you to pass additional variables.
+
+#### Built-in conditional logic
+
+The Mustache templating also provides some other convenient expansions, each
+of which is described here.
+
+##### Incrementally Revealable Hints
+
+The parser supports a special nested block, in Markdown cells only, for
+revealable hints. The `{{#HINTS}}` construct introduces a block of hints (and
+is closed by `{{/HINTS}}`); such a constructo contains one or more revealable
+hints and an optional answer.
+
+This construct is best described by example. Consider the following Markdown
+cell:
+
+<pre><code>%md
+
+This is a pithy description of an exercise you are to perform, below.
+
+{{#HINTS}}
+
+{{#HINT}}Revealable hint 1.{{/HINT}}
+
+{{#HINT}}  
+
+Revealable hint 2. Note that the source for this one
+is multiple lines _and_ contains some **Markdown** to be
+rendered.
+
+{{/HINT}}
+
+{{#ANSWER}}
+
+Still no luck? Here's your answer:
+
+```
+df = spark.read.option("inferSchema", "true").option("header", "true").csv("dbfs:/tmp/foo.csv")
+df.limit(10).show()
+```
+
+{{/ANSWER}}
+
+{{/HINTS}}
+</code></pre>
+
+
+When run through the master parser, the above will render a cell that
+initially looks like this:
+
+![](https://files.training.databricks.com/images/tooling/hint-1.png)
+
+After the first button click, the cell will look like this:
+
+![](https://files.training.databricks.com/images/tooling/hint-2.png)
+
+After the second button click, the cell will look like this:
+
+![](https://files.training.databricks.com/images/tooling/hint-3.png)
+
+After the final button click, the cell will look like this:
+
+![](https://files.training.databricks.com/images/tooling/hint-4.png)
+
+**More formally**:
+
+A hints block:
+
+- _must_ contain at least one hint block. A hint is Markdown or HTML in between
+  a starting `{{#HINT}}` and an ending `{{/HINT}}`.
+
+- _may_ contain multiple `{{#HINT}}` blocks.
+
+- _may_ contain an `{{#ANSWER}}` block.
+
+`{{#HINTS}}`, `{{#HINT}}` and `{{#ANSWER}}` blocks may contain leading and
+trailing blank lines, to aid source readability; those lines are stripped on
+output.
+
+#### Basic Mustache Syntax
+
+Mustache is a very simple template language. For full details, see
+the [Mustache][] manual page. For our purposes, two most useful constructs
+are conditional content and variable substitution.
+
+Here's an example of conditional content:
+
+```
+{{#amazon}}
+Rendered if amazon is defined.
+{{/amazon}}
+```
+
+If the variable "amazon" has a non-empty value (or is `true`), then the
+string "Rendered if amazon is defined" is included in the cell. Otherwise,
+the entire construct is omitted.
+
+This is Mustache's form of an _if_ statement. There is no _else_ statement.
+There's a kind of _if not_, however: Simply replace the `#` with a `^`.
+
+```
+{{^amazon}}
+Rendered if amazon is not defined.
+{{/amazon}}
+```
+
+This construct also works inline:
+
+```
+Mount your {{#amazon}}S3 bucket{{/amazon}}{{#azure}}blob store{{/azure}}
+to DBFS.
+```
+
+Variable substitution is quite simple: Just enclose the variable's name in
+`{{` and `}}`. For example:
+
+```
+This is a {{notebook_language}} notebook.
+```
+
+If `notebook_language` is set to "Scala", that line will render as:
+
+```
+This is a Scala notebook.
+```
+
+#### Example
+
+For a more complete example, consider this Markdown cell:
+
+```
+%md
+
+In this {{notebook_language}} notebook,
+you can access your data by mounting your
+{{#amazon}}
+S3 bucket
+{{/amazon}}
+{{#azure}}
+Azure blob store
+{{/azure}}
+to DBFS.
+```
+
+When generated with an Amazon profile, in a Scala output notebook, this
+cell would become:
+
+
+```
+%md
+
+In this Scala notebook,
+you can access your data by mounting your
+S3 bucket
+to DBFS.
+```
+
+[Mustache]: http://mustache.github.io/mustache.5.html

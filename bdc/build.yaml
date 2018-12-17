@@ -1,291 +1,49 @@
-# Template for bdc build YAML file.
+# Template for bdc build YAML file. See the bdc README.md for documentation.
 
-# -----------------------------------------------------------------------------
-# ON VARIABLE SUBSTITUTION
-#
-# Many sections of a build.yaml support variable substitution. The syntax is
-# Unix shell-like:
-#
-# $var   - substitute the value of a variable called "var"
-# ${var} - substitute the value of a variable called "var"
-#
-# The second form is useful when you need to ensure that a variable's name
-# doesn't get mashed together with a subsequent non-white space string, e.g.:
-#
-# ${var}foo     Substitutes the value of "var" preceding the string "foo"
-# $varfoo       Attempts to substitute the value of "varfoo"
-#
-# To escape a $, use $$ or \$.  To escape a backslash, use \\.
-#
-# VARIABLE NAMES
-# ---------------
-#
-# Legal variable names consist of alphanumeric and underscore characters only.
-#
-# SUBSCRIPTING AND SLICING
-# ------------------------
-#
-# Variables can be subscripted and sliced, Python-style, as long as they use the
-# brace (${var}) syntax.
-#
-# Examples:
-#
-# - ${foo[0]}
-# - ${foo[-1]}
-# - ${foo[2:3]}
-# - ${foo[:]}
-# - ${foo[:-1]}
-# - ${foo[1:]}
-#
-# Subscripts are interpreted as in Python code, except that the "stride"
-# capability isn't supported. (That is, you cannot use ${foo[0:-1:2]
-# to slice through a value with index jumps of 2.)
-#
-# One difference: If the final subscript is too large, it's sized down. For
-# instance, if the variable "foo" is "ABCDEF", the substitution ${foo[100]}
-# yields "F", and the substitution `${foo[1:10000]}` yields "BCDEF". As a
-# special case, subscripting an empty variable always yields an empty string.
-#
-# INLINE ("TERNARY") IF
-# ---------------------
-#
-# The variable syntax supports a C-like "ternary IF" statement. The general
-# form is:
-#
-#     ${variable == "SOMESTRING" ? "TRUESTRING" : "FALSESTRING"}
-#     ${variable != "SOMESTRING" ? "TRUESTRING" : "FALSESTRING"}
-#
-# WARNING: When using a ternary IF, the string MUST be quoted in single quotes.
-# Otherwise, the YAML parser will barf (due to the embedded ":").
-#
-#
-# Rules:
-#
-# 1. The braces are _not_ optional.
-# 2. The strings (SOMESTRING, TRUESTRING and FALSESTRING) must be surrounded
-#    by double quotes. Single quotes are not supported.
-# 3. Simple variable substitutions ($var ${var}, ${var[0], etc.) are permitted
-#    within the quoted strings, but the quotes are still required. Ternary IFs
-#    and inline editing are not supported within a ternary IF.
-# 4. The white space is optional.
-# 5. When using a ternary IF substitution, your MUST surround the entire string
-#    in single quotes. The string has to be quoted to prevent the YAML
-#    parser from getting confused by the embedded ":" character.
-# 6. To use a literal double quote within one of the ternary expressions,
-#    escape it with \".
-#
-# White space is optional. Valid examples:
-#
-# 1. Substitute the string "FOO" if "$foo" equals "foo". Otherwise, substitute
-#    the string "BAR".
-#
-#      ${foo == "foo" ? "FOO" : "BAR"}
-#
-# 2. Substitute the string "-solution" if "notebook_type" is "answers".
-#    Otherwise, substitute nothing.
-#
-#      ${notebook_type=="answers"?"-solution":""}
-#
-# 3. Variables within the ternary expressions:
-#
-#      ${foo == "$bar" ? "It matches $$bar." : "It's $foo, not $bar"}
-#               ^    ^   ^                 ^   ^                   ^
-#               Note that the double quotes are REQUIRED
-#
-#      ${x == "abc${foo}def" ? "YES" : "NO."}
-#
-# 4. Double quote (") as part of a value being tested:
-#
-#      ${foo == "\"" ? "QUOTE" : "NOT QUOTE"}
-#
-# INLINE EDIT DURING VARIABLE SUBSTITUTION
-# ----------------------------------------
-#
-# You can do some basic sed-like editing on a variable's value, using a
-# syntax that's vaguely reminiscent (but somewhat more readable) than
-# Bash's variable-editing syntax.
-#
-# Format:
-#
-#    ${var/regex/repl/flags}
-#    ${var|regex|repl|flags}
-#
-# In the regex and the replacement string, delimiters ("|" and "/") can be
-# escaped with a preceding "\". It's usually more readable to use the
-# alternate delimiter, though.
-#
-# In the replacement string, regex capture groups can be referenced with a "$"
-# syntax (e.g., "$1"). A literal "$" can be espressed as "\$".
-#
-# Flags (optional):
-#   i - case-independent matching
-#   g - replace all matches, not just the first
-#
-# Examples:
-#
-#    ${foo/^[a-z]/X/g}                    replace all lower case letters with X
-#    ${file|(\d+)(-.*)$|$1a-$2|}   Insert an "a" after any leading digits,
-#                                  and before the "-". e.g.: "01-Foobar"
-#                                  becomes "01a-Foobar".
+bdc_min_version: "1.22"
+master_parse_min_version: "1.16"
 
-# -----------------------------------------------------------------------------
-
-
-# bdc_min_version:
-#
-#  The minimum version of bdc necessary to parse the build file. REQUIRED, as
-#  of bdc version 1.10.0. Must be of the form: <major.minor.patch> (e.g.,
-#  1.10.0) or <major.minor> (e.g., 1.10). The patch number is NOT considered,
-#  as bdc will never break build parsing with a patch release.
-#
-# WARNING: Be sure to quote this value, so it isn't interpreted as a float!
-bdc_min_version: "1.11"
-
-# master_parse_min_version:
-
-#  The minimum version of the master parser necessary to  process any
-#  master-parse notebooks. REQUIRED if any notebooks have "master" enabled.
-#  Ignored otherwise.
-#
-#  Must be of the form: <major.minor.patch> (e.g., 1.10.0) or <major.minor>
-#  (e.g., 1.10). The patch number is NOT considered, as patch releases of
-#  master parse won't break parsing.
-#
-# WARNING: Be sure to quote this value, so it isn't interpreted as a float!
-master_parse_min_version: "1.11"
-
-# course_info: Basic information about the course being built.
-#
-# FIELDS:
-#
-# name            - the name of the course (e.g., Spark-Programming). Should
-#                   not have any white space in the name, as the name will be
-#                   used to construct file names. REQUIRED.
-# version         - semantic version number of the course (e.g., 1.0.1). See
-#                   semver.org for a discussion of semantic versioning.
-#                   REQUIRED.
-# class_setup     - path to the (PDF) class setup instructions (for site
-#                   managers of a given training site) on how to prepare the
-#                   classroom environment. For Databricks and New Circle
-#                   classes, a survey exists for this purpose. However, for
-#                   partners, this document summarizes the minimum needs.
-#                   The path is relative to the directory containing this build
-#                   file. This file will be copied to the top of the destination
-#                   directory. OPTIONAL.
-# schedule        - path to a document (PDF, spreadsheet) that describes the
-#                   recommended teaching schedule for the class. The path
-#                   is relative to the directory containing this build file.
-#                   This file will be copied to "InstructorFiles/<schedule>"
-#                   in the destination directory. OPTIONAL.
-# prep            - path to a Markdown document that outlines any instructor
-#                   preparation that must be done before teaching the class.
-#                   This file is copied to "InstructorFiles/Preparation.md" in
-#                   the destination directory, and it is converted to HTML and
-#                   copied to "InstructorFiles/Preparation.html". OPTIONAL.
-# copyright_year  - The year to be substituted into any internal copyright
-#                   notices. Default: The current year.
-# deprecated      - If present and true, this field marks the course as
-#                   deprecated (i.e., no longer used). Attempts to build the
-#                   course will fail.
 course_info:
   name: coursename
-  version: version
+  title: "A Readable Title for this Course" # defaults to <name>
+  version: 1.0.0
   #copyright_year: 2015
   deprecated: false
+  type: self-paced
 
-# You can define your own build-wide variables in a "variables" section.
-# These variables cannot override built-in variables, such as ${course_id},
-# ${basename}, etc. Attempts to do so are simply ignored.
-#
-# You can override these variables on a per-notebook basis, as well.
+use_profiles: false
+
 variables:
   foo: bar
 
-# top_dbc_folder_name: The top-level folder in the DBC. Defaults to
-#                      course_info.name
-#
-# The following variables can be substituted into this value:
-#
-# ${course_name}    - the course name, from the course_info.name config item
-# ${course_version} - the course version, from the course_info.version config
-#                     item
-# ${course_id}      - Convenience variable: Same as
-#                     "${course_name}-${course_version}"
-# <your variables>  - any variables in the "variables" config section
+bundle:
+  zipfile: course.zip
+  files:
+    -
+      src: 00_README.pdf
+      dest: $filename
+    -
+      src: Labs.dbc
+      dest: Lessons.dbc
 
 #top_dbc_folder_name: ${course_name}
 
 notebook_type_name:
-  # Specify the substitution names for ${notebook_type}. Only meaningful
-  # with master-parsed output notebooks. There are three notebook types:
-  # See the section on notebooks, below.
-  #
-  # - exercises
-  # - answers
-  # - instructor
-  #
-  # You can use this section to map those types to different strings.
-  # If you don't map a particular type, then it is used as is to replace
-  # references to ${notebook_type}
   exercises: ""
   answers: Solutions
   #instructor: instructor
 
-# By default, the directories containing the notebooks are deleted once the
-# corresponding DBC files are created. You can set this field to "true"
-# to override that behavior.
 #keep_lab_dirs: false
 
-# Markdown configuration
-#
-# html_stylesheet - path to an HTML stylesheet to include, inline, in any HTML
-#                   generated from Markdown. OPTIONAL.
 markdown:
   #html_stylesheet:
 
-# The folder (relative to the top of the DBC) in which to store student files,
-# such as the generated Labs.dbc. OPTIONAL. Defaults to "StudentFiles". Can
-# be empty, to store all files at the top level.
-#
-# WARNING: This setting MUST NOT match the instructor_dir setting.
-
 #student_dir: StudentFiles
-
-# The folder (relative to the top of the DBC) in which to store instructor
-# files, such as the generated Instructor-Labs.dbc. OPTIONAL. Defaults to
-# "InstructorFiles". Can be empty, to store all files at the top level.
-#
-# WARNING: This setting MUST NOT match the student_dir setting.
 
 #instructor_dir: InstructorFiles
 
-# src_base: Location of the base directory for the source curriculum
-# material, relative to the location of THIS FILE. This will almost always
-# be "../../modules". REQUIRED.
 src_base: /Users/bmc/src/databricks/training/modules
 
-# misc_files: Files that should be copied to the course directory. Paths
-# are relative to THIS FILE (not to <src_base>). These files are copied to
-# the destination directory and, if Markdown, also converted to HTML.
-#
-# FIELDS:
-#
-# src   - source path to the file to be copied, relative to the directory
-#         containing this build file. REQUIRED.
-# dest  - destination path, relative to the top course directory. REQUIRED.
-# skip  - true to skip this entry, false to keep it. This field is a convenient
-#         alternative to commenting the entire entry out.
-#         OPTIONAL. Default: false
-#
-# SUBSTITUTIONS:
-#
-# In the <dest> value, the following substitution tokens are permitted:
-#
-# ${basename}      - the base file name of the source, WITHOUT the extension
-# ${filename}      - the base file name of the source, WITH the extension
-# ${extension}     - the file extension
-# <your variables> - Any variables defined in the "variables" section can
-#                    also be substituted here.
 misc_files:
   -
     src: ClassSetup.pdf
@@ -295,146 +53,14 @@ misc_files:
     dest: InstructorFiles/$filename
   -
     src: InstructorFiles/Preparation.md
-    dest: InstructorFiles/$filename
-
-
-# notebooks: The notebooks to be included in the courseware. These notebooks
-# will be parsed and stored in a DBC file. In addition, any files within
-# the notebook directories that start with "Instructor-Notes" will be copied,
-# as well.
-#
-# WARNING: The notebooks should be encoded in ASCII or UTF-8. Other encodings
-# (e.g., ISO-8859.1) will cause the build to abort.
-#
-# FIELDS:
-#
-# src        - path to the notebook, relative to <src_base>. REQUIRED.
-#
-# dest       - the destination path within the DBC file and within the
-#              StudentFiles/Labs directory.
-#
-#              For a non-master notebook, this destination is the path to the
-#              notebook's destination (relative to StudentFiles/Labs) and must
-#              be a file.
-#
-#              For a master notebook, this value must be a directory and
-#              specifies the base directory for the output notebooks (relative
-#              to the top of the DBC file and StudentFiles/Labs). Individual
-#              language notebook destinations can be further controlled within
-#              the "master" section. (Note that answer notebooks, if enabled,
-#              are always moved to InstructorFiles/Answer-Labs and placed in
-#              the instructor's DBC file, not the students' DBC file.)
-#
-#              For master notebooks, ${target_lang} can be used to substitute
-#              post-parsed final (target) language into the path. If missing,
-#              ${target_lang} is inserted at the BEGINNING of the path. For
-#              instance:
-#
-#              dest: "overview/${target_lang}/nb-01"  # explicit
-#              dest: "overview/nb-01"  # same as "${target_lang}/overview/notebook-01"
-#
-#              If you want to suppress the target language entirely (e.g.,
-#              because you're only using one language), start the
-#              path with a "/" (meaning "starting from the top of the DBC")
-#              and don't include ${target_lang}.
-#
-#              REQUIRED.
-#
-# skip       - true to skip this entry, false to keep it. This field is a
-#              convenient alternative to commenting the entire entry out.
-#              OPTIONAL. Default: false
-#
-# upload_download - True if this notebook should be transferred during upload
-#              or download operations, false otherwise. (False is useful when
-#              double-processing a notebook.)
-#
-# master     - If this section is present, it marks the notebook as a master
-#              notebook to be processed by the master parse tool, and it
-#              contain master parse parameters. If this section is missing,
-#              then the notebook is not preprocessed; it's simply copied.
-#              the master parse tool; false otherwise. OPTIONAL.
-#
-#              The following parameters are supported.
-#
-#              Note: When master parsing is enabled, instructor, exercises
-#              and answer notebooks are ALWAYS generated.
-#
-#   enabled          - true to enable master processing, false to disable.
-#                      Default: false.
-#
-#                      The easiest way to enable master processing with all the
-#                      defaults is:
-#
-#                      master:
-#                        enabled: true
-#
-#   answers          - whether or not to generate answer notebooks. True by
-#                      default.
-#   instructor       - whether or not to generate answer notebooks. True by
-#                      default.
-#   scala            - true to generate a Scala notebook. True by default.
-#   python           - true to generate a Python notebook. True by default.
-#   r                - true to generate an R notebook. False by default.
-#   sql              - true to generate an SQL notebook. False by default.
-#   encoding_in      - the encoding to use when reading the master notebook.
-#                      Defaults to UTF-8
-#   encoding_out     - the encoding to use when writing the output notebooks.
-#                      Defaults to UTF-8
-#   heading          - a subsection defining notebook heading settings for this
-#                      notebook.
-#     path           - the path to the notebook heading. Must be HTML or
-#                      Markdown and is inserted into a "%md-sandbox" cell.
-#                      Default: An internal default is used. You can explicitly
-#                      force the default by setting the path to "DEFAULT".
-#     enabled        - Whether or not to add a heading to the notebook. True
-#                      by default. One use case for setting it to false:
-#                      Notebooks that are only intended to be run via "%run"
-#   footer           - a subsection defining footer settings for this notebook.
-#     path           - the path to the notebook footer. Must be HTML or Markdown
-#                      and is inserted into a "%md-sandbox" cell. Default: An
-#                      internal default copyright footer is used. The copyright
-#                      year is taken from the "course_info.copyright_year"
-#                      setting. You can explicitly force the default by setting
-#                      the path to "DEFAULT".
-#     enabled        - Whether or not to add a footer to the notebook. True by
-#                      default.
-#
-# SUBSTITUTIONS:
-#
-# In the <dest> value, the following substitution tokens are always permitted:
-#
-# ${basename}         - the base file name of the source, WITHOUT the extension
-# ${filename}         - the base file name of the source, WITH the extension
-# ${extension}        - the file extension, without any leading "."
-# <your variables>    - Any variables defined in the "variables" section can
-#                       also be substituted.
-#
-# In addition, if master parsing is enabled for a notebook, the following
-# tokens are also permitted.
-#
-# ${target_lang}      - substitute the output notebook language (Scala, R,
-#                       Python, SQL).
-# ${target_extension} - substitute the output notebook extension, without any
-#                       leading "." (e.g., "scala", "py", "r", "sql")
-# ${notebook_type}    - The output notebook type (exercises, answers, or
-#                       instructor). If you've included a "notebook_type_name"
-#                       mapping, then those strings will be used. Otherwise,
-#                       "exercises", "answers" and "instructor" will be used,
-#                       as appropriate.
-#
-# Notes on ${target_lang}:
-#
-# - If you specify ${target_lang} in the dest value, the target master parse
-#   language is substituted, for each language-generated notebook.
-# - If you don't specify ${target_lang}, and there are multiple languages
-#   selected in the "master" section, you'll get an error.
+    dest: InstructorFiles
+    dest_is_dir: true
+  -
+    src: ../../README_template.html
+    dest: 00_README.pdf
+    template: true
 
 notebook_defaults:
-  # Here, you can set default values for the "master" section, the
-  # "heading" section, the "footer" section and the "dest" value. These defaults
-  # are applied to all notebooks that don't have explicit values for them.
-  # Expansions in "dest" are deferred until runtime (i.e., they're not expanded
-  # here).
   master:
     enabled: true
     scala: false
@@ -446,25 +72,14 @@ notebook_defaults:
       #path: /path/to/alternate/notebook/footer
       #enabled: false
   dest: $basename.$target_extension
-  # You can define notebook-specific variables that are evaluated when the
-  # notebook is generated, after master parsing is done. They're permitted
-  # in individual notebook sections, as well as in the notebook_defaults
-  # section.
-  #
-  # Variables defined here override any variables defined in the global
-  # "variables" section. However, they cannot override built-in variables,
-  # such as ${course_id}, ${notebook_type}, etc. Attempts to do so are
-  # simply ignored.
+
   variables:
     suffix: ${notebook_type[0]} # expanded during processing
 
 notebooks:
-  # List of notebooks in the course.
   -
     src: Overview-History/Introductions.py
-    # With this dest, you'll get an error, because the output location is
-    # ambiguous.
-    dest: Overview-History
+    dest: $filename
     master:
       enabled: true
       r: false
@@ -473,41 +88,13 @@ notebooks:
       python: true
   -
     src: Module1/Notebook1.scala
-    # With this dest, the output ends up in:
-    #     Module1/Scala/Notebook1_exercises.scala
-    #     Module1/Scala/Notebook1_answers.scala
-    #     Module1/Python/Notebook1_exercises.py
-    #     Module1/PYthon/Notebook1_answers.py
-    dest: Module1/${target_lang}
+    dest: Module1/${target_lang}/01-Intro-$notebook_type.$target_extension
     master:
       enabled: true
       r: false
       scala: true
       sql: false
       python: true
-  -
-    src: Module1/Notebook2.py
-    # With this dest, the output ends up in:
-    #     Notebook1_exercises.py
-    #     Notebook1_answers.py
-    # You don't get an error because there's only a single output language.
-    dest: Notebook1
-    master:
-      enabled: true
-      r: false
-      scala: false
-      sql: false
-      python: true
-
-  -
-    src: Module2/Foo.py
-    #dest: $target_lang/Module2/$notebook_type/$basename.$target_extension
-    dest: $common_dest
-    master:
-      enabled: true
-      python: true
-      scala: true
-
   -
     src: Module2/Includes/Shared.py
     dest: $target_lang/Module2/Includes/$basename.$target_extension
@@ -517,26 +104,6 @@ notebooks:
       scala: false
       add_heading: false
 
-# slides: PowerPoint slides to be included in the courseware. The slides are
-#         copied to the destination directory's "InstructorFiles" subdirectory.
-#
-# The format is similar to the <notebooks> section.
-#
-# FIELDS:
-#
-# src  - path to the slide deck, relative to <src_base>
-# dest - the destination path within the "InstructorFiles" target directory
-#
-# SUBSTITUTIONS:
-#
-# In the <dest> value, the following substitution tokens are permitted:
-#
-# ${basename}  - the base file name of the source, WITHOUT the extension
-# ${filename}  - the base file name of the source, WITH the extension
-# ${extension} - the file extension
-#
-# This section may eventually be deprecated or removed, as we move toward 100%
-# notebook-driven courseware.
 slides:
   -
     src: Overview-History/Welcome-Overview.pptx
@@ -545,31 +112,10 @@ slides:
     src: RDD-Fundamentals/RDD-Fundamentals.pptx
     dest: 02-${filename}
 
-# datasets: Datasets to be included in the courseware. The files are copied
-#           to the destination directory's "StudentFiles" subdirectory, in
-#           a special subdirectory called "datasets". Each dataset will end
-#           up in its own subdirectory below "datasets".
-#
-# FIELDS:
-#
-# src     - Path to the data set file, relative to this file. If the data set
-#           comprises multiple files (e.g., a Parquet file, which is really a
-#           directory), it should be zipped into one file. REQUIRED.
-# dest    - Name of the target subdirectory within the "StudentFiles/datasets"
-#           directory. REQUIRED.'
-#
-# Each dataset MUST have:
-#
-# - a README.md file associated with it, describing the datset
-# - a LICENSE.md file associated with it, describing the dataset's provenance
-#   and licensing.
-#
-# These files must live in the same directory as the dataset and will be copied,
-# in both original Markdown and HTML formats, to the destination directory.
 datasets:
   -
     src: ../../datasets/tom-sawyer/tom-sawyer.txt
-    dest: datasets/tom-sawyer
+    dest: tom-sawyer
   -
     src: ../../datasets/bigrams/bigrams.zip
-    dest: datasets/bigrams
+    dest: bigrams

@@ -3,12 +3,21 @@ Can be run to install all the subpieces.
 '''
 
 from __future__ import print_function
-from setuptools import setup
+
+try:
+    from setuptools import setup
+    from setuptools.command.install import install
+    from setuptools.command.sdist import sdist
+except ImportError:
+    from distutils.core import setup
+    from distutils.command.install import install
+    from distutils.command.sdist import sdist
+
 import os
 import sys
 from contextlib import contextmanager
 
-VERSION = '1.1.0'
+VERSION = '1.6.0'
 
 @contextmanager
 def chdir(dir):
@@ -24,14 +33,18 @@ def cmd(command):
     if rc != 0:
         raise OSError('"{0}" failed with return code {1}'.format(command, rc))
 
+class CustomInstallCommand(install):
+    """Customized setuptools install command - prints a friendly greeting."""
+    def run(self):
+        install.run(self)
+
+
 top_dir = os.path.dirname(os.path.abspath(__file__))
 
-if len(sys.argv) > 1 and sys.argv[1] == 'install':
-    import pip
+if (len(sys.argv) > 1 and
+    (sys.argv[1] == 'install') or (sys.argv[1].startswith('bdist'))):
     print('Installing/upgrading databricks-cli')
-    rc = pip.main(['install', '--upgrade', 'databricks-cli'])
-    if rc != 0:
-        raise OSError('pip install failed.')
+    cmd('pip install --upgrade databricks-cli')
 
     with chdir(os.path.join(top_dir, 'gendbc')):
         print('Installing gendbc...')
@@ -44,7 +57,10 @@ if len(sys.argv) > 1 and sys.argv[1] == 'install':
 
 setup(
     name='db-build-tooling',
-    package=[],
+    packages=[],
+    install_requires=[
+        'databricks-cli==0.8.0',
+    ],
     version=VERSION,
     description='Wrapper package for Databricks Training build tools',
     author='Databricks Education Team',
