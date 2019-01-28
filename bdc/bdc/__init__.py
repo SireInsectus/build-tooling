@@ -30,9 +30,11 @@ from datetime import datetime
 from ConfigParser import SafeConfigParser, NoOptionError
 from enum import Enum
 import master_parse
+from gendbc import gendbc
 from grizzled.file import eglob
 from bdc.bdcutil import *
 from string import Template as StringTemplate
+from typing import Sequence
 
 
 # We're using backports.tempfile, instead of tempfile, so we can use
@@ -40,13 +42,17 @@ from string import Template as StringTemplate
 # was added in Python 3.2.
 from backports.tempfile import TemporaryDirectory
 
+__all__ = ['bdc_check_build', 'bdc_list_notebooks', 'bdc_build_course',
+           'bdc_download', 'bdc_upload', 'bdc_check_build',
+           'bdc_print_info']
+
 # ---------------------------------------------------------------------------
 # Constants
 #
 # (Some constants are below the class definitions.)
 # ---------------------------------------------------------------------------
 
-VERSION = "1.25.0"
+VERSION = "1.27.0"
 
 DEFAULT_BUILD_FILE = 'build.yaml'
 PROG = os.path.basename(sys.argv[0])
@@ -59,6 +65,7 @@ USAGE = ("""
 Usage:
   {0} (--version)
   {0} --info [--shell] [BUILD_YAML]
+  {0} (-C | --check) [BUILD_YAML]
   {0} (-h | --help)
   {0} [-o | --overwrite] [-v | --verbose] [-d DEST | --dest DEST] [BUILD_YAML] 
   {0} --list-notebooks [BUILD_YAML]
@@ -75,6 +82,8 @@ properly for --upload and --download to work.
 
 Options:
   -h --help                Show this screen.
+  -C --check               Parse the build file and validate that the referenced
+                           paths actually exist.
   -d DEST --dest DEST      Specify output destination. Defaults to
                            ~/tmp/curriculum/<course_id>
   -o --overwrite           Overwrite the destination directory, if it exists.
@@ -169,13 +178,13 @@ class UploadDownloadError(Exception):
     pass
 
 
-class ConfigError(BuildError):
+class BuildConfigError(BuildError):
     pass
 
 
-class UnknownFieldsError(ConfigError):
+class UnknownFieldsError(BuildConfigError):
     def __init__(self, parent_section, section_name, unknown_keys):
-        super(ConfigError, self).__init__(
+        super(BuildConfigError, self).__init__(
             '"{0}": Unknown fields in "{1}" section: {2}'.format(
                 parent_section, section_name, ', '.join(unknown_keys)
             )
@@ -272,12 +281,12 @@ class CourseInfo(DefaultStrMixin):
 
 class Bundle(DefaultStrMixin):
     def __init__(self, zipfile, files=None):
-        '''
+        """
         Parsed bundle information.
 
         :param zipfile:  the zip file for the bundle
         :param files:    a list of BundleFile objects
-        '''
+        """
         self.files = files or []
         self.zipfile = zipfile
 
@@ -521,7 +530,7 @@ class NotebookData(object, DefaultStrMixin):
                  master=None,
                  variables=None,
                  only_in_profile=None):
-        '''
+        """
         Captures parsed notebook data.
 
         :param src:             Partial or full path to the notebook
@@ -535,7 +544,7 @@ class NotebookData(object, DefaultStrMixin):
         :param variables:       Any variables for the notebook.
         :param only_in_profile: Profile to which notebook is restricted, if
                                 any.
-        '''
+        """
         super(NotebookData, self).__init__()
         self.src = src
         self.dest = dest
@@ -607,7 +616,7 @@ class BuildData(object, DefaultStrMixin):
         :param notebooks:             list of parsed Notebook objects
         :param slides:                parsed SlideInfo object
         :param datasets:              parsed DatasetData object
-        :param misc_files:            parsed MiscFilesData object
+        :param misc_files:            parsed MiscFileData object
         :param keep_lab_dirs:         value of keep_lab_dirs setting
         :param notebook_heading:      parsed NotebookHeading object
         :param markdown_cfg:          parsed MarkdownInfo object
@@ -626,7 +635,19 @@ class BuildData(object, DefaultStrMixin):
         self.output_info = output_info
         self.slides = slides
         self.datasets = datasets
-        self.markdown = markdown_cfg
+
+        if markdown_cfg.html_stylesheet:
+            if path.isabs(markdown_cfg.html_stylesheet):
+                self.markdown = markdown_cfg
+            else:
+                # Stylesheet is relative to the build directory. Resolve it
+                # here.
+                p = joinpath(path.dirname(build_file_path),
+                             markdown_cfg.html_stylesheet)
+                self.markdown = markdown_cfg._replace(html_stylesheet=p)
+        else:
+            self.markdown = markdown_cfg
+
         self.misc_files = misc_files
         self.keep_lab_dirs = keep_lab_dirs
         self.notebook_type_map = notebook_type_map
@@ -695,7 +716,8 @@ MASTER_PARSE_DEFAULTS = {
 def error(msg):
     global errors
     errors += 1
-    emit_error(msg)
+    if msg:
+        emit_error(msg)
 
 
 def die(msg, show_usage=False):
@@ -710,9 +732,10 @@ def die(msg, show_usage=False):
 
 
 def load_build_yaml(yaml_file):
+    # type: (str) -> BuildData
     """
     Load the YAML configuration file that defines the build for a particular
-    class. Returns a BuildData object. Throws ConfigError on error.
+    class. Returns a BuildData object. Throws BuildConfigError on error.
 
     :param yaml_file   the path to the build file to be parsed
     :param output_dir  the top-level build output directory
@@ -738,7 +761,7 @@ def load_build_yaml(yaml_file):
             else:
                 msg = 'Missing required "{0}" in "{1}".'.format(key, where)
 
-            raise ConfigError(msg)
+            raise BuildConfigError(msg)
 
         return v
 
@@ -751,7 +774,7 @@ def load_build_yaml(yaml_file):
         (base_no_ext, ext) = path.splitext(base_with_ext)
 
         if '@' in dest:
-            raise ConfigError('The "@" character is disallowed in destinations.')
+            raise BuildConfigError('The "@" character is disallowed in destinations.')
 
         # A certain set of variables is expanded only after master parsing; all
         # others are expanded here. Any references to post master-parse variables
@@ -801,7 +824,7 @@ def load_build_yaml(yaml_file):
                 try:
                     res[field] = bool_value(d[field])
                 except ValueError as e:
-                    raise ConfigError(
+                    raise BuildConfigError(
                         '{0}: Bad value for "{1}" in section "{2}": {3}'.format(
                             outer_section, field, section, e.message
                         )
@@ -833,7 +856,7 @@ def load_build_yaml(yaml_file):
                 if not path.isabs(heading_path):
                     heading_path = path.abspath(joinpath(build_yaml_dir, heading_path))
                 if not path.exists(heading_path):
-                    raise ConfigError(
+                    raise BuildConfigError(
                         'Footer file "{}" does not exist.'.format(heading_path)
                     )
                 heading['path'] = heading_path
@@ -852,7 +875,7 @@ def load_build_yaml(yaml_file):
                 if not path.isabs(footer_path):
                     footer_path = path.abspath(joinpath(build_yaml_dir, footer_path))
                 if not path.exists(footer_path):
-                    raise ConfigError(
+                    raise BuildConfigError(
                         'Footer file "{}" does not exist.'.format(footer_path)
                     )
                 footer['path'] = footer_path
@@ -887,7 +910,7 @@ def load_build_yaml(yaml_file):
 
         dest = obj.get('dest', notebook_defaults.dest)
         if not dest:
-            raise ConfigError(
+            raise BuildConfigError(
                 ('Notebook "{0}": Missing "dest" section, and no default ' +
                  '"dest" in notebook defaults.').format(src)
             )
@@ -907,7 +930,7 @@ def load_build_yaml(yaml_file):
 
         _, dest_ext = os.path.splitext(dest)
         if master.enabled and bad_dest.match(dest):
-            raise ConfigError(
+            raise BuildConfigError(
                 ('Notebook "{0}": Relative destinations ("{1}") are ' +
                  'disallowed.').format(src, dest)
             )
@@ -917,7 +940,7 @@ def load_build_yaml(yaml_file):
             if (total_langs > 1):
                 pat = POST_MASTER_PARSE_VARIABLES[TARGET_LANG]
                 if not matches_variable_ref(pat, dest):
-                    raise ConfigError(
+                    raise BuildConfigError(
                         ('Notebook "{0}": When multiple master parser languages ' +
                          'are used, you must substitute ${1} in the ' +
                          'destination.').format(
@@ -927,21 +950,21 @@ def load_build_yaml(yaml_file):
         else:
             _, src_ext = os.path.splitext(src)
             if (not dest_ext) or (dest_ext != src_ext):
-                raise ConfigError(
+                raise BuildConfigError(
                     ('Notebook "{0}": "master" is disabled, so "dest" should ' +
                      'have extension "{1}".').format(src, src_ext)
                 )
             for pats in POST_MASTER_PARSE_VARIABLES.values():
                 m = matches_variable_ref(pats, dest)
                 if m:
-                    raise ConfigError(
+                    raise BuildConfigError(
                       ('Notebook "{0}": "{1}" found in "dest", but "master" ' +
                        'is disabled.').format(src, m[1])
                 )
 
         prof = obj.get('only_in_profile')
         if prof and (prof not in VALID_PROFILES):
-            raise ConfigError(
+            raise BuildConfigError(
                 ('Notebook "{0}": Bad value of "{1}" for only_in_profile. ' +
                  'Must be one of: {2}').format(
                     src, prof, ', '.join(VALID_PROFILES)
@@ -949,7 +972,7 @@ def load_build_yaml(yaml_file):
             )
 
         if prof and (not master.enabled):
-            raise ConfigError(
+            raise BuildConfigError(
                 ('Notebook "{0}": only_in_profile is set, but master is ' +
                  'not enabled.'.format(src))
             )
@@ -1009,11 +1032,11 @@ def load_build_yaml(yaml_file):
             src = d['src']
             dest = d['dest']
             if not (dest or src):
-                raise ConfigError('"bundle" has a file with no "src" or "dest".')
+                raise BuildConfigError('"bundle" has a file with no "src" or "dest".')
             if not src:
-                raise ConfigError('"bundle" has a file with no "src".')
+                raise BuildConfigError('"bundle" has a file with no "src".')
             if not dest:
-                raise ConfigError('"bundle" has a file with no "dest".')
+                raise BuildConfigError('"bundle" has a file with no "dest".')
 
             src = StringTemplate(src).substitute(src_vars)
             dest = parse_time_subst(dest, src, allow_lang=False,
@@ -1042,7 +1065,7 @@ def load_build_yaml(yaml_file):
             # PDF or HTML. An HTML file can be translated to HTML or PDF.
             # is_template is disallowed for non-text files.
             if mf.is_template and (not is_text_file(src)):
-                raise ConfigError(
+                raise BuildConfigError(
                     ('Section misc_files: "{}" is marked as a template' +
                      "but it is not a text file.").format(src)
                 )
@@ -1053,7 +1076,7 @@ def load_build_yaml(yaml_file):
             if has_extension(dest):
                 # It's a file, not a directory.
                 if mf.dest_is_dir:
-                    raise ConfigError(
+                    raise BuildConfigError(
                         ('Section misc_files: "{}" uses a "dest" of "{}", ' +
                          'which has an extension, so it is assumed to be a ' +
                          'file. But, "dest_is_dir" is set to true.').format(
@@ -1062,14 +1085,14 @@ def load_build_yaml(yaml_file):
                     )
                 if is_markdown(src):
                     if not (is_pdf(dest) or is_html(dest) or is_markdown(dest)):
-                        raise ConfigError(
+                        raise BuildConfigError(
                             ('Section misc_files: "{}" is Markdown, the ' +
                              'target ("{}") is not a directory and is not ' +
                              "PDF, HTML or Markdown.").format(src, dest)
                         )
                 if is_html(src):
                     if not (is_pdf(dest) or is_html(dest)):
-                        raise ConfigError(
+                        raise BuildConfigError(
                             ('Section misc_files: "{}" is HTML, the ' +
                              'target ("{}") is not a directory and is not ' +
                              "PDF or HTML.").format(src, dest)
@@ -1081,7 +1104,7 @@ def load_build_yaml(yaml_file):
 
                 # Some simple sanity checks.
                 if (not mf.dest_is_dir) and (dest in ('.', '..')):
-                    raise ConfigError(
+                    raise BuildConfigError(
                         ('Section misc_files: "{}" has a "dest" of "{}", ' +
                          '''but "dest_is_dir" is set to false. That's just ''' +
                          'silly.').format(src, dest)
@@ -1102,18 +1125,18 @@ def load_build_yaml(yaml_file):
             readme = joinpath(src_dir, 'README.md')
             p = joinpath(build_yaml_dir, src)
             if not path.exists(p):
-                raise ConfigError('Dataset file "{}" does not exist'.format(p))
+                raise BuildConfigError('Dataset file "{}" does not exist'.format(p))
 
             for i in (license, readme):
                 p = joinpath(build_yaml_dir, i)
                 if not path.exists(p):
-                    raise ConfigError(
+                    raise BuildConfigError(
                         'Dataset "{}": Required "{}" does not exist.'.format(
                             src, p
                         )
                     )
                 if os.stat(p).st_size == 0:
-                    raise ConfigError(
+                    raise BuildConfigError(
                         'Dataset "{}": "{}" is empty.'.format(
                             src, p
                         )
@@ -1154,7 +1177,7 @@ def load_build_yaml(yaml_file):
                 res[t] = v
 
         if invalid_keys:
-            raise ConfigError(
+            raise BuildConfigError(
                 'Unknown key(s) in "notebook_type_name" section: {0}'.format(
                     ', '.join(invalid_keys)
                 ))
@@ -1164,7 +1187,7 @@ def load_build_yaml(yaml_file):
         res = contents.get(key)
         if res is not None:
             if isinstance(res, float):
-                raise ConfigError(
+                raise BuildConfigError(
                     '"{0}" of the form <major>.<minor> must be quoted.'.format(
                         key
                     )
@@ -1173,7 +1196,7 @@ def load_build_yaml(yaml_file):
                 # Ignore the match version.
                 res = parse_version_string(res)[0:2]
             except ValueError as e:
-                raise ConfigError(
+                raise BuildConfigError(
                     'Bad value of "{0}" for "{1}": {2}'.format(
                         res, key, e.message
                     )
@@ -1183,7 +1206,7 @@ def load_build_yaml(yaml_file):
     def parse_course_type(data, section):
         course_type = data.get('type')
         if not course_type:
-            raise ConfigError(
+            raise BuildConfigError(
                 'Missing required "{}.type" setting in "{}"'.format(
                     section, yaml_file
                 )
@@ -1194,7 +1217,7 @@ def load_build_yaml(yaml_file):
         if course_type.lower() == 'ilt':
             return master_parse.CourseType.ILT
 
-        raise ConfigError(
+        raise BuildConfigError(
             ('Unknown value of "{}" for "{}.type". Legal values are ' +
              '"ilt" and "self-paced".').format(course_type, course_type)
         )
@@ -1249,12 +1272,12 @@ def load_build_yaml(yaml_file):
         for (k, v) in (('student_dbc', student_dbc),
                        ('instructor_dbc', instructor_dbc)):
             if path.dirname(v) != '':
-                raise ConfigError(
+                raise BuildConfigError(
                     '"{}" value "{}" is not a simple file name.'.format(k, v)
                 )
 
         if student_dir == instructor_dir:
-            raise ConfigError(
+            raise BuildConfigError(
                 ('"student_dir" and "instructor_dir" cannot be the same. ' +
                  '"student_dir" is "{0}". ' +
                  '"instructor_dir" is "{1}".').format(
@@ -1280,7 +1303,7 @@ def load_build_yaml(yaml_file):
 
     cur_major_minor = parse_version_string(VERSION)[0:2]
     if bdc_min_version > cur_major_minor:
-        raise ConfigError(
+        raise BuildConfigError(
             ("This build requires bdc version {0}.x or greater, but " +
              "you're using bdc version {1}.").format(
                 '.'.join(map(str, bdc_min_version)), VERSION
@@ -1330,7 +1353,7 @@ def load_build_yaml(yaml_file):
         # abort.
         profiles = {n.only_in_profile for n in notebooks if n.only_in_profile}
         if (not use_profiles) and (len(profiles) > 0):
-            raise ConfigError(
+            raise BuildConfigError(
                 'At least one notebook has "only_in_profile" set, but the ' +
                 'build does not specify "use_profiles: true".'
             )
@@ -1349,7 +1372,7 @@ def load_build_yaml(yaml_file):
 
         master_version = parse_version_string(master_parse.VERSION)[0:2]
         if required_master_min_version > master_version:
-            raise ConfigError(
+            raise BuildConfigError(
                 ("This build requires master_parse version {0}.x or greater, " +
                  "but you're using master_parse version {1}.").format(
                      '.'.join(map(str, required_master_min_version)),
@@ -1463,7 +1486,7 @@ def _get_type(f):
     return None
 
 def _convert_and_copy_info_file(src, dest, build):
-    '''
+    """
     Workhorse function: Takes the source and target, looks up how to process
     them, and processes them.
 
@@ -1471,7 +1494,7 @@ def _convert_and_copy_info_file(src, dest, build):
     :param dest:   the destination file (not directory)
     :param build:  the parsed build information
 
-    '''
+    """
     src_type = _get_type(src)
     dest_type = _get_type(dest)
 
@@ -1790,28 +1813,41 @@ def copy_instructor_notes(build, dest_root, profile):
                 continue
 
 
-def make_dbc(gendbc, build, labs_dir, dbc_path):
+def make_dbc(build, labs_dir, dbc_path):
     """
     Create a DBC file from the labs.
     """
-    wd = path.dirname(labs_dir)
-    with working_directory(wd):
-        simple_labs_dir = path.basename(labs_dir)
-        if verbosity_is_enabled():
-            cmd = "{0} {1} {2} {3} {4} {5}".format(
-                gendbc, "-v", "-f", build.top_dbc_folder_name, simple_labs_dir,
-                dbc_path
-            )
-        else:
-            cmd = "{0} {1} {2} {3} {4}".format(
-                gendbc, "-f", build.top_dbc_folder_name, simple_labs_dir,
-                dbc_path
-            )
+    try:
+        gendbc(source_dir=labs_dir,
+               encoding="utf-8",
+               dbc_path=dbc_path,
+               dbc_folder=build.top_dbc_folder_name,
+               flatten=False,
+               verbose=verbosity_is_enabled(),
+               debug=False)
+    #except Exception as e:
+    #    raise e #BuildError("Failed to create DBC: {}".format(e.message))
+    finally:
+        pass
 
-        verbose("\nIn {0}:\n{1}\n".format(wd, cmd))
-        rc = os.system(cmd)
-        if rc != 0:
-            raise BuildError("Failed to create DBC: " + cmd)
+    # wd = path.dirname(labs_dir)
+    # with working_directory(wd):
+    #     simple_labs_dir = path.basename(labs_dir)
+    #     if verbosity_is_enabled():
+    #         cmd = "{0} {1} {2} {3} {4} {5}".format(
+    #             gendbc, "-v", "-f", build.top_dbc_folder_name, simple_labs_dir,
+    #             dbc_path
+    #         )
+    #     else:
+    #         cmd = "{0} {1} {2} {3} {4}".format(
+    #             gendbc, "-f", build.top_dbc_folder_name, simple_labs_dir,
+    #             dbc_path
+    #         )
+    #
+    #     verbose("\nIn {0}:\n{1}\n".format(wd, cmd))
+    #     rc = os.system(cmd)
+    #     if rc != 0:
+    #         raise BuildError("Failed to create DBC: " + cmd)
 
 
 def copy_slides(build, dest_root):
@@ -1914,7 +1950,7 @@ def bundle_course(build, dest_dir, profile):
             z.write(src, dest)
 
 
-def do_build(build, gendbc, base_dest_dir, profile=None):
+def do_build(build, base_dest_dir, profile=None):
     if profile:
         dest_dir = joinpath(base_dest_dir, profile)
     else:
@@ -1944,8 +1980,7 @@ def do_build(build, gendbc, base_dest_dir, profile=None):
     student_dbc = joinpath(
         dest_dir, build.output_info.student_dir, build.output_info.student_dbc
     )
-    make_dbc(gendbc=gendbc,
-             build=build,
+    make_dbc(build=build,
              labs_dir=labs_full_path,
              dbc_path=student_dbc)
 
@@ -1958,7 +1993,7 @@ def do_build(build, gendbc, base_dest_dir, profile=None):
             build.output_info.instructor_dbc
         )
         write_version_notebook(instructor_labs, version_notebook, version)
-        make_dbc(gendbc, build, instructor_labs, instructor_dbc)
+        make_dbc(build, instructor_labs, instructor_dbc)
 
     copy_slides(build, dest_dir)
     copy_misc_files(build, dest_dir, profile)
@@ -1973,30 +2008,37 @@ def do_build(build, gendbc, base_dest_dir, profile=None):
         rm_rf(labs_full_path)
         rm_rf(instructor_labs)
 
-def build_course(opts, build, dest_dir):
+def build_course(build, dest_dir, overwrite):
+    # type: (BuildData, str, bool) -> None
+    """
+
+    :param build:
+    :param dest_dir:
+    :param overwrite:
+    :return:
+    """
 
     if build.course_info.deprecated:
-        die('{0} is deprecated and cannot be built.'.format(
+        raise BuildError('{0} is deprecated and cannot be built.'.format(
             build.course_info.name
         ))
 
-    gendbc = find_in_path('gendbc')
-
     verbose('Publishing to "{0}"'.format(dest_dir))
     if path.isdir(dest_dir):
-        if not opts['--overwrite']:
-            die(('Directory "{0}" already exists, and you did not ' +
-                 'specify --overwrite.').format(dest_dir))
+        if not overwrite:
+            raise BuildError(
+                ('Directory "{0}" already exists, and you did not specify ' +
+                 'overwrite.').format(dest_dir))
 
         rm_rf(dest_dir)
 
     if not build.use_profiles:
-        do_build(build, gendbc, dest_dir, profile=None)
+        do_build(build, dest_dir, profile=None)
     else:
         for profile in VALID_PROFILES:
             info('')
             info("Building profile {}".format(profile))
-            do_build(build, gendbc, dest_dir, profile)
+            do_build(build, dest_dir, profile)
 
     if errors > 0:
         raise BuildError("{0} error(s).".format(errors))
@@ -2137,7 +2179,8 @@ def get_sources_and_targets(build):
 
     :param build: the build
 
-    :return: A dict of source names to partial-path target names
+    :return: A dict of source names to partial-path target names. Each source
+             name can map to multiple targets.
     """
     template_data = {
         TARGET_LANG: '',
@@ -2199,30 +2242,51 @@ def get_sources_and_targets(build):
             ext = ext[1:] # remove the leading "."
         dest = map_notebook_dest(nb)
 
-        res[nb_full_path] = dest
+        res[nb_full_path] = res.get(nb_full_path, []) + [dest]
 
     return res
 
 
-def upload_notebooks(build, shard_path, db_profile):
-    shard_path = expand_shard_path(shard_path)
-    ensure_shard_path_does_not_exist(shard_path, db_profile)
+def check_for_multiple_upload_download_mappings(notebooks):
+    """
+    Check the result returned by get_sources_and_targets() for sources that
+    map to multiple targets.
 
+    :param notebooks: the result of get_get_sources_and_targets()
+
+    :return: A sequence of (source, targets) tuples of only those results that
+             map to multiple targets. The iterator might be empty.
+    """
+    res = {}
+    for src, targets in notebooks.items():
+        if len(targets) == 1:
+            continue
+        res[src] = targets
+
+    return tuple(res.items())
+
+def upload_notebooks(build, shard_path, db_profile):
+    # type: (BuildData, str, str) -> None
+    shard_path = expand_shard_path(shard_path)
     notebooks = get_sources_and_targets(build)
-    try:
+
+    def do_upload(notebooks):
+        ensure_shard_path_does_not_exist(shard_path, db_profile)
+
         with TemporaryDirectory() as tempdir:
             info("Copying notebooks to temporary directory.")
-            for nb_full_path, partial_path in notebooks.items():
+            for nb_full_path, partial_paths in notebooks.items():
                 if not path.exists(nb_full_path):
                     warning('Notebook "{}" does not exist. Skipping it.'.format(
                         nb_full_path
                     ))
                     continue
-                temp_path = joinpath(tempdir, partial_path)
-                dir = path.dirname(temp_path)
-                mkdirp(dir)
-                verbose('Copying "{0}" to "{1}"'.format(nb_full_path, temp_path))
-                copy(nb_full_path, temp_path)
+                for partial_path in partial_paths:
+                    temp_path = joinpath(tempdir, partial_path)
+                    dir = path.dirname(temp_path)
+                    mkdirp(dir)
+                    verbose('Copying "{0}" to "{1}"'.format(nb_full_path, temp_path))
+                    copy(nb_full_path, temp_path)
 
             with working_directory(tempdir):
                 info("Uploading notebooks to {0}".format(shard_path))
@@ -2236,60 +2300,113 @@ def upload_notebooks(build, shard_path, db_profile):
                     info("Uploaded {0} notebooks to {1}.".format(
                         len(notebooks), shard_path
                     ))
+
+    try:
+        do_upload(notebooks)
     except UploadDownloadError as e:
         dbw('rm', [shard_path], capture_stdout=False, db_profile=db_profile)
         die(e.message)
 
+    multiple_mappings = check_for_multiple_upload_download_mappings(notebooks)
+    if len(multiple_mappings) > 0:
+        wrap2stdout('\n********')
+        wrap2stdout('CAUTION:')
+        wrap2stdout('********\n')
+        wrap2stdout('Some source files have been copied to multiple destinations!\n')
+
+        for src, targets in multiple_mappings:
+            wrap2stdout(
+                ('\n"{}" has been uploaded to multiple places. Only edits to ' +
+                 '"{}/{}" will be applied on download.').format(
+                    src, shard_path, targets[0]
+            ))
+
+        wrap2stdout("\nIf you edit the build file before you run --download, " +
+                    "you might lose any edits to those files!")
+
 
 def download_notebooks(build, shard_path, db_profile):
+    # type: (BuildData, str, str) -> None
     shard_path = expand_shard_path(shard_path)
-    ensure_shard_path_exists(shard_path, db_profile)
+    notebooks = get_sources_and_targets(build)
+
+    def do_download(notebooks):
+        # remote_to_local is assumed to be a 1-1 mapping of remote paths to
+        # local paths.
+        ensure_shard_path_exists(shard_path, db_profile)
+        with TemporaryDirectory() as tempdir:
+            info("Downloading notebooks to temporary directory")
+            with working_directory(tempdir):
+                rc, res = dbw('export_dir', [shard_path, '.'], db_profile=db_profile)
+                if rc != 0:
+                    raise UploadDownloadError(
+                        "Download failed: {0}".format(res.get('message', '?'))
+                    )
+
+                for local, remotes in notebooks.items():
+                    # We only ever download the first one.
+                    remote = remotes[0]
+                    if not path.exists(remote):
+                        warning(('Cannot find downloaded version of course ' +
+                                 'notebook "{0}".').format(local))
+                    print('"{0}" -> {1}'.format(remote, local))
+                    # Make sure there's a newline at the end of each file.
+                    move(remote, local, ensure_final_newline=True)
+                    # Remove any others, so they're not treated as leftovers.
+                    for r in remotes[1:]:
+                        if path.exists(r):
+                            os.unlink(r)
+
+                # Are there any leftovers?
+                leftover_files = []
+                for root, dirs, files in os.walk('.'):
+                    for f in files:
+                        leftover_files.append(path.relpath(joinpath(root, f)))
+                if len(leftover_files) > 0:
+                    warning(("These files from {0} aren't in the build file and" +
+                             " were not copied").format(shard_path))
+                    for f in leftover_files:
+                        print("    {0}".format(f))
 
     # get_sources_and_targets() returns a dict of
-    # local-path -> remote-partial-path. Reverse it. Bail if there are any
-    # duplicate keys, because it's supposed to be 1:1.
+    # local-path -> remote-partial-paths. Reverse it. If there are duplicate
+    # (remote) keys, keep only the first one. See upload_notebooks()
     remote_to_local = {}
-    for local, remote in get_sources_and_targets(build).items():
+    for local, remotes in notebooks.items():
+        # We only ever download the first one.
+        remote = remotes[0]
         if remote in remote_to_local:
             die('(BUG): Found multiple instances of remote path "{0}"'.format(
                 remote
             ))
         remote_to_local[remote] = local
 
-    with TemporaryDirectory() as tempdir:
-        info("Downloading notebooks to temporary directory")
-        with working_directory(tempdir):
-            rc, res = dbw('export_dir', [shard_path, '.'], db_profile=db_profile)
-            if rc != 0:
-                die("Download failed: {0}".format(res.get('message', '?')))
+    try:
+        do_download(notebooks)
+    except UploadDownloadError as e:
+        die(e.message)
 
-            for remote, local in remote_to_local.items():
-                if not path.exists(remote):
-                    warning(('Cannot find downloaded version of course ' +
-                             'notebook "{0}".').format(local))
-                print('"{0}" -> {1}'.format(remote, local))
-                # Make sure there's a newline at the end of each file.
-                move(remote, local, ensure_final_newline=True)
+    multiple_mappings = check_for_multiple_upload_download_mappings(notebooks)
+    if len(multiple_mappings) > 0:
+        wrap2stdout('\n********')
+        wrap2stdout('CAUTION:')
+        wrap2stdout('********\n')
+        wrap2stdout('Some source files exist more than once in the build file!')
 
-            # Are there any leftovers?
-            leftover_files = []
-            for root, dirs, files in os.walk('.'):
-                for f in files:
-                    leftover_files.append(path.relpath(joinpath(root, f)))
-            if len(leftover_files) > 0:
-                warning(("These files from {0} aren't in the build file and" +
-                         " were not copied").format(shard_path))
-                for f in leftover_files:
-                    print("    {0}".format(f))
-
-
-def list_notebooks(build):
-    for notebook in build.notebooks:
-        src_path = joinpath(build.source_base, notebook.src)
-        print(src_path)
+        for src, targets in multiple_mappings:
+            wrap2stdout('\n"{}" has ONLY been downloaded from "{}/{}"'.format(
+                    src, shard_path, targets[0]
+            ))
 
 
 def print_info(build, shell):
+    # type: (BuildData, bool) -> None
+    """
+
+    :param build:
+    :param shell:
+    :return:
+    """
     if shell:
         print('COURSE_NAME="{}"; COURSE_VERSION="{}"'.format(
             build.name, build.course_info.version
@@ -2297,6 +2414,255 @@ def print_info(build, shell):
     else:
         print("Course name:    {}".format(build.name))
         print("Course version: {}".format(build.course_info.version))
+
+
+def validate_build(build):
+    # type: (BuildData) -> None
+    """
+    :param build:
+    :return:
+    :raises BuildConfigError: validation failed, and errors were printed
+    """
+    # TODO: Path joins here duplicate logic elsewhere. Consolidate.
+    errors = 0
+    error_prefix = "ERROR: "
+    wrapper = BDCTextWrapper(subsequent_indent=' ' * len(error_prefix))
+    build_file_dir = path.dirname(path.abspath(build.build_file_path))
+
+    def complain(msg):
+        print(wrapper.fill(error_prefix + msg))
+
+    def rel_to_build(src):
+        return joinpath(build_file_dir, src)
+
+    def rel_to_src_base(src):
+        return joinpath(build.source_base, src)
+
+    if not path.exists(build.source_base):
+        complain('src_base "{}" does not exist.'.format(
+            path.abspath(build.source_base)
+        ))
+        errors += 1
+
+    headings = set()
+    footers = set()
+
+    for notebook in build.notebooks:
+        src_path = rel_to_src_base(notebook.src)
+        if not path.exists(src_path):
+            complain('Notebook "{}" does not exist.'.format(src_path))
+            errors += 1
+
+        master = notebook.master
+        if master and master.enabled:
+            if master.heading.enabled and (master.heading.path is not None):
+                headings.add(rel_to_build(master.heading.path))
+
+            if master.footer.enabled and (master.footer.path is not None):
+                footers.add(rel_to_build(master.footer.path))
+
+    for h in headings:
+        if not path.exists(h):
+            complain('Notebook heading "{}" does not exist.'.format(h))
+            errors += 1
+
+    for f in footers:
+        if not path.exists(f):
+            complain('Notebook footer "{}" does not exist.'.format(f))
+            errors += 1
+
+    for misc in build.misc_files:
+        src_path = rel_to_build(misc.src)
+        if not path.exists(src_path):
+            complain('misc_file "{}" does not exist.'.format(src_path))
+            errors += 1
+
+    if build.slides:
+        for slide in build.slides:
+            src_path = rel_to_src_base(slide.src)
+            if not path.exists(src_path):
+                complain('Slide "{}" does not exist.'.format(src_path))
+                errors += 1
+
+    if build.datasets:
+        for dataset in build.datasets:
+            src_path = joinpath(build.course_directory, dataset.src)
+            if not path.exists(src_path):
+                complain('Dataset "{}" does not exist.'.format(src_path))
+                errors += 1
+
+    if build.markdown and build.markdown.html_stylesheet:
+        if not path.exists(build.markdown.html_stylesheet):
+            complain('markdown.html_stylesheet "{}" does not exist.'.format(
+                build.markdown.html_stylesheet
+            ))
+            errors +=1
+
+    if errors == 1:
+        print("\n*** One error.")
+    elif errors > 1:
+        print("\n*** {} errors.".format(errors))
+
+    if errors > 0:
+        raise BuildConfigError("Build file validation failure.")
+
+    return
+
+
+def load_and_validate(build_file):
+    # type: (str) -> BuildData
+    build = load_build_yaml(build_file)
+    validate_build(build)
+    return build
+
+
+def init_verbosity(verbose):
+    # type: (bool) -> None
+    if verbose:
+        set_verbosity(True, verbose_prefix='bdc: ')
+    else:
+        set_verbosity(False, verbose_prefix='')
+
+
+def default_output_directory_for_build(build):
+    # type: (BuildData) -> str
+    return joinpath(os.getenv("HOME"), "tmp", "curriculum",
+                    build.course_id)
+
+# ---------------------------------------------------------------------------
+# Exported functions
+# ---------------------------------------------------------------------------
+
+def bdc_check_build(build_file, verbose=False):
+    # type: (str, bool) -> None
+    """
+    :param build_file:
+    :param verbose:
+    :return:
+    """
+    init_verbosity(verbose)
+    _ = load_and_validate(build_file)
+    if errors == 0:
+        print('\nNo errors.')
+    else:
+        # Error messages already printed.
+        raise BuildError('There are problems with "{}".'.format(build_file))
+
+
+def bdc_get_notebook_paths(build_file):
+    # type: (str) -> Sequence[str]
+    """
+    Get the paths of all source notebooks in a build file. Notebooks that
+    are used multiple times are only listed once.
+
+    :param build_file: the build file to load
+
+    :return: the notebook paths, as absolute paths
+    """
+    build = load_and_validate(build_file)
+    return sorted(list(set([joinpath(build.source_base, notebook.src)
+                       for notebook in build.notebooks])))
+
+
+def bdc_list_notebooks(build_file):
+    # type: (str) -> None
+    """
+    Print the paths of notebooks in a build file to standard output. Notebooks
+    that appear multiple times in a build are only listed once.
+
+    :param build_file: the build out.
+    :return: Nothing
+    """
+    for p in bdc_get_notebook_paths(build_file):
+        print(p)
+
+
+def bdc_print_info(build_file, shell_format=False):
+    # type: (str, bool) -> None
+    """
+    Display information about the build file to standard output.
+
+    :param build_file:    the path to the build file
+    :param shell_format:  whether to print the info as shell assignments (True)
+                          or in human-readable form (False).
+    :return: Nothing
+    """
+    build = load_and_validate(build_file)
+    print_info(build, shell_format)
+
+
+def bdc_upload(build_file, shard_path, databricks_profile=None, verbose=False):
+    # type: (str, str, str, bool) -> None
+    """
+    Upload a course's source notebooks to Databricks.
+
+    :param build_file:          the path to the build file for the course
+    :param shard_path:          the Databricks path to which to upload them
+    :param databricks_profile:  the Databricks authentication profile to use
+    :param verbose:             whether or not to display verbose messages
+
+    :return: Nothing
+    """
+    init_verbosity(verbose)
+    build = load_and_validate(build_file)
+    upload_notebooks(build, shard_path, databricks_profile)
+
+
+def bdc_download(build_file, shard_path, databricks_profile=None, verbose=False):
+    # type: (str, str, str, bool) -> None
+    """
+    Download a course's source notebooks from Databricks and copy them back
+    over top of the notebooks on the local disk.
+
+    :param build_file:          the path to the build file for the course
+    :param shard_path:          the Databricks path from which to download them
+    :param databricks_profile:  the Databricks authentication profile to use
+    :param verbose:             whether or not to display verbose messages
+
+    :return: Nothing
+    """
+    init_verbosity(verbose)
+    build = load_and_validate(build_file)
+    download_notebooks(build, shard_path, databricks_profile)
+
+
+def bdc_output_directory_for_build(build_file):
+    # type: (str) -> str
+    """
+    Determine the default output directory for a particular course.
+
+    :param build_file: the build file for the course
+
+    :return: the path to the output directory
+    """
+    build = load_and_validate(build_file)
+    return default_output_directory_for_build(build)
+
+
+def bdc_build_course(build_file, dest_dir, overwrite, verbose=False):
+    # type: (str, str, bool, bool) -> None
+    """
+    Build a course.
+
+    :param build_file: the path to the build file
+    :param dest_dir:   the destination directory for the build, or None to use
+                       the default
+    :param overwrite:  If the destination directory exists already, and this
+                       parameter is True, then the destination directory will
+                       be recursively removed before the build is run. If the
+                       directory is there and this parameter is False, the
+                       function will raise an exception.
+    :param verbose:    whether or not to display verbose messages
+
+    :return: Nothing
+    """
+    init_verbosity(verbose)
+    build = load_and_validate(build_file)
+    if not dest_dir:
+        dest_dir = joinpath(os.getenv("HOME"), "tmp", "curriculum",
+                            build.course_id)
+    build_course(build, dest_dir, overwrite)
+
 
 # ---------------------------------------------------------------------------
 # Main program
@@ -2306,33 +2672,28 @@ def main():
 
     opts = parse_args()
 
-    if opts['--verbose']:
-        set_verbosity(True, verbose_prefix='bdc: ')
-
     course_config = opts['BUILD_YAML'] or DEFAULT_BUILD_FILE
     if not os.path.exists(course_config):
         die('{} does not exist.'.format(course_config))
 
     try:
-
-        build = load_build_yaml(course_config)
-        dest_dir = (
-                opts['--dest'] or
-                joinpath(os.getenv("HOME"), "tmp", "curriculum", build.course_id)
-        )
-
-        if opts['--list-notebooks']:
-            list_notebooks(build)
+        if opts['--check']:
+            bdc_check_build(course_config)
         elif opts['--info']:
-            print_info(build, opts['--shell'])
+            bdc_print_info(course_config, opts['--shell'])
+        elif opts['--list-notebooks']:
+            bdc_list_notebooks(course_config)
         elif opts['--upload']:
-            upload_notebooks(build, opts['SHARD_PATH'], opts['--dprofile'])
+            bdc_upload(course_config, opts['SHARD_PATH'], opts['--dprofile'],
+                       opts['--verbose'])
         elif opts['--download']:
-            download_notebooks(build, opts['SHARD_PATH'], opts['--dprofile'])
+            bdc_download(course_config, opts['SHARD_PATH'], opts['--dprofile'],
+                         opts['--verbose'])
         else:
-            build_course(opts, build, dest_dir)
+            bdc_build_course(course_config, opts['--dest'], opts['--overwrite'],
+                             opts['--verbose'])
 
-    except ConfigError as e:
+    except BuildConfigError as e:
         die('Error in "{0}": {1}'.format(course_config, e.message))
     except BuildError as e:
         die(e.message)

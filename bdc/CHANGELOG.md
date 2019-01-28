@@ -1,5 +1,29 @@
 # Change Log for BDC
 
+### Version 1.26.1
+
+- Now uses `namedtuple._replace` to copy a `namedtuple` while replacing one
+  value, instead of custom code.
+
+### Version 1.27.0
+
+- `gendbc` is now written in Python. Changed `bdc` to call it as a Python
+  function, instead of invoking the JVM to run the old command line Scala
+  version.
+- Refactored `bdc` so that its functionality is available as a library, as
+  well as from the command line.
+
+### Version 1.26.0
+
+- `bdc --upload` and `bdc --download` now support multiple instances of a 
+  source file. The source file will be uploaded to all the target places.
+  Upon download, only the first instance will be downloaded. **Use with care!**
+- The build file is now validated before a build, upload, or download is run.   
+- Added `--check` (`-C`) argument that can be used to validate a build file
+  without running a build.
+- `markdown.html_stylesheet` path is now assumed to be relative to the build
+  file, unless it's absolute (which isn't recommended).
+
 ### Version 1.25.0
 
 - In `misc_files`, if the destination does not have an extension, it is now

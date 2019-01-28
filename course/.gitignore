@@ -3,5 +3,3 @@
 /tmp
 /logs
 *.iml
-.idea
-.mypy_cache

@@ -169,11 +169,12 @@ the `markdown` section:
 
 ```yaml
 markdown:
-  html_stylesheet: /path/to/my/stylesheet.css
+  html_stylesheet: path/to/my/stylesheet.css
 ```
 
 If you specify `markdown.html_stylesheet`, the stylesheet you specify is
 inserting, inline, in each HTML file that is generated from Markdown source.
+Unless absolute, the path is assumed to be relative to the build file.
 
 ### Output Generation
 
@@ -1240,6 +1241,15 @@ Invoke bdc with no arguments to get a quick usage message.
 ### Show only the version
 
 `bdc --version`
+
+### Check your `build.yaml` for errors
+
+Running `bdc --check` against a `build.yaml` file parses the file and
+checks it for obvious problems, without actually doing anything else.
+
+`bdc` performs that same validation _automatically_, when you run a
+build or use `--upload` or `--download`. But `--check` lets you force
+a validation check.
 
 ### Get a list of the notebooks in a course
 
